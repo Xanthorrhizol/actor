@@ -93,3 +93,30 @@ let result = actor.send_and_recv(
   MyMessage::B("b".to_string()),
 ).await;
 ```
+
+## Job
+
+- If you send message at some time or with some iteration, you can use job
+
+```rust
+use actor::JobSpec;
+...
+
+let job = JobSpec::new(
+  Some(2), /*max_iter*/
+  Some(std::time::Duration::from_secs(3)), /*interval*/
+  std::time::SystemTime::now(), /*start_at*/
+);
+let recv_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>> = actor.run_job(
+  "some-address".to_string(),
+  true,
+  job,
+  MyMessage::C("c".to_string()),
+);
+
+if let Some(recv_rx) = recv_rx {
+    while let Some(result) = recv_rx.recv().await {
+        println!("result returned");
+    }
+}
+```
