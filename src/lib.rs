@@ -2,34 +2,10 @@ pub mod error;
 pub mod types;
 
 use crate::error::ActorError;
-use crate::types::JobSpec;
+pub use crate::types::{JobSpec, Message};
 use log::error;
 use std::collections::HashMap;
 use std::error::Error;
-
-#[derive(Debug)]
-pub struct Message<T, R> {
-    inner: T,
-    result_tx: Option<tokio::sync::oneshot::Sender<R>>,
-}
-
-impl<T, R> Message<T, R>
-where
-    T: Sized + Send + Clone,
-    R: Sized + Send,
-{
-    pub fn new(inner: T, result_tx: Option<tokio::sync::oneshot::Sender<R>>) -> Self {
-        Self { inner, result_tx }
-    }
-
-    pub fn inner(&self) -> T {
-        self.inner.clone()
-    }
-
-    pub fn result_tx(self) -> Option<tokio::sync::oneshot::Sender<R>> {
-        self.result_tx
-    }
-}
 
 #[async_trait::async_trait]
 pub trait Handler<T, R, E>
