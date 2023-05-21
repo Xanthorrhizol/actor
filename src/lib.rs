@@ -107,20 +107,24 @@ where
                 let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
                 tokio::spawn(async move {
                     let mut i = 0;
-                    loop {
-                        i += 1;
-                        let (result_tx, result_rx) = tokio::sync::oneshot::channel::<R>();
+                    if let Some(interval) = job.interval() {
+                        loop {
+                            i += 1;
+                            if job.start_at() <= std::time::SystemTime::now() {
+                                let (result_tx, result_rx) = tokio::sync::oneshot::channel::<R>();
+                                let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
+                                let _ = sub_tx.send(result_rx.await);
+                                tokio::time::sleep(interval).await;
+                                if let Some(max_iter) = job.max_iter() && i >= max_iter{
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
                         if job.start_at() <= std::time::SystemTime::now() {
+                            let (result_tx, result_rx) = tokio::sync::oneshot::channel::<R>();
                             let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
                             let _ = sub_tx.send(result_rx.await);
-                            if let Some(interval) = job.interval() {
-                                tokio::time::sleep(interval).await;
-                            } else {
-                                break;
-                            }
-                            if let Some(max_iter) = job.max_iter() && i >= max_iter{
-                                break;
-                            }
                         }
                     }
                 });
@@ -128,18 +132,20 @@ where
             } else {
                 tokio::spawn(async move {
                     let mut i = 0;
-                    loop {
-                        i += 1;
+                    if let Some(interval) = job.interval() {
+                        loop {
+                            i += 1;
+                            if job.start_at() <= std::time::SystemTime::now() {
+                                let _ = tx.send(Message::new(msg.clone(), None));
+                                tokio::time::sleep(interval).await;
+                                if let Some(max_iter) = job.max_iter() && i >= max_iter{
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
                         if job.start_at() <= std::time::SystemTime::now() {
                             let _ = tx.send(Message::new(msg.clone(), None));
-                            if let Some(interval) = job.interval() {
-                                tokio::time::sleep(interval).await;
-                            } else {
-                                break;
-                            }
-                            if let Some(max_iter) = job.max_iter() && i >= max_iter{
-                                break;
-                            }
                         }
                     }
                 });
