@@ -87,10 +87,13 @@ handler.register(&mut actor);
 5. use it
 
 ```rust
-let _ = actor.send("some-address".to_string(), MyMessage::A("a".to_string()));
+let _ = actor.send(
+  "some-address".to_string(), /* address */
+  MyMessage::A("a".to_string()), /* message */
+);
 let result = actor.send_and_recv(
-  "some-address".to_string(),
-  MyMessage::B("b".to_string()),
+  "some-address".to_string(), /* address */
+  MyMessage::B("b".to_string()), /* message */
 ).await;
 ```
 
@@ -103,15 +106,15 @@ use actor::JobSpec;
 ...
 
 let job = JobSpec::new(
-  Some(2), /*max_iter*/
-  Some(std::time::Duration::from_secs(3)), /*interval*/
-  std::time::SystemTime::now(), /*start_at*/
+  Some(2), /* max_iter */
+  Some(std::time::Duration::from_secs(3)), /* interval */
+  std::time::SystemTime::now(), /* start_at */
 );
 let recv_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>> = actor.run_job(
-  "some-address".to_string(),
-  true,
-  job,
-  MyMessage::C("c".to_string()),
+  "some-address".to_string(), /* address */
+  true, /* whether subscribe the handler result or not(if true, it returns Some(rx)) */
+  job, /* job as JobSpec */
+  MyMessage::C("c".to_string()), /* message */
 );
 
 if let Some(recv_rx) = recv_rx {
