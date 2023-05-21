@@ -1,6 +1,8 @@
 pub mod error;
+pub mod types;
 
 use crate::error::ActorError;
+use crate::types::JobSpec;
 use log::error;
 use std::collections::HashMap;
 use std::error::Error;
@@ -106,6 +108,67 @@ where
             let (result_tx, result_rx) = tokio::sync::oneshot::channel::<R>();
             let _ = tx.send(Message::new(msg, Some(result_tx)))?;
             Ok(result_rx.await?)
+        } else {
+            Err(ActorError::AddressNotFound(address))
+        }
+    }
+
+    pub async fn run_job(
+        &self,
+        address: String,
+        subscript: bool,
+        job: JobSpec,
+        msg: T,
+    ) -> Result<
+        Option<
+            tokio::sync::mpsc::UnboundedReceiver<Result<R, tokio::sync::oneshot::error::RecvError>>,
+        >,
+        ActorError<T, R>,
+    > {
+        if let Some(tx) = self.map.get(&address) {
+            let tx = tx.clone();
+            if subscript {
+                let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
+                tokio::spawn(async move {
+                    let mut i = 0;
+                    loop {
+                        i += 1;
+                        let (result_tx, result_rx) = tokio::sync::oneshot::channel::<R>();
+                        if job.start_at() <= std::time::SystemTime::now() {
+                            let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
+                            let _ = sub_tx.send(result_rx.await);
+                            if let Some(interval) = job.interval() {
+                                tokio::time::sleep(interval).await;
+                            } else {
+                                break;
+                            }
+                            if let Some(max_iter) = job.max_iter() && i >= max_iter{
+                                break;
+                            }
+                        }
+                    }
+                });
+                Ok(Some(sub_rx))
+            } else {
+                tokio::spawn(async move {
+                    let mut i = 0;
+                    loop {
+                        i += 1;
+                        if job.start_at() <= std::time::SystemTime::now() {
+                            let _ = tx.send(Message::new(msg.clone(), None));
+                            if let Some(interval) = job.interval() {
+                                tokio::time::sleep(interval).await;
+                            } else {
+                                break;
+                            }
+                            if let Some(max_iter) = job.max_iter() && i >= max_iter{
+                                break;
+                            }
+                        }
+                    }
+                });
+                Ok(None)
+            }
         } else {
             Err(ActorError::AddressNotFound(address))
         }
