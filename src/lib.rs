@@ -115,8 +115,10 @@ where
                                 let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
                                 let _ = sub_tx.send(result_rx.await);
                                 tokio::time::sleep(interval).await;
-                                if let Some(max_iter) = job.max_iter() && i >= max_iter{
-                                    break;
+                                if let Some(max_iter) = job.max_iter() {
+                                    if i >= max_iter {
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -138,8 +140,10 @@ where
                             if job.start_at() <= std::time::SystemTime::now() {
                                 let _ = tx.send(Message::new(msg.clone(), None));
                                 tokio::time::sleep(interval).await;
-                                if let Some(max_iter) = job.max_iter() && i >= max_iter{
-                                    break;
+                                if let Some(max_iter) = job.max_iter() {
+                                    if i >= max_iter {
+                                        break;
+                                    }
                                 }
                             }
                         }
