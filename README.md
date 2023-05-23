@@ -5,7 +5,7 @@
 1. add actor in Cargo.toml
 
 ```toml
-actor = { git = "ssh://git@github.com:Xanthorrhizol/actor", branch = "main" }
+actor = { git = "ssh://git@github.com/Xanthorrhizol/actor", branch = "main" }
 ```
 
 2. create a actor as mutable
