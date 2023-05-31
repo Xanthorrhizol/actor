@@ -21,22 +21,30 @@ where
 
     fn register(mut self, actor: &mut Actor<T, R>, kill_in_error: bool) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message<T, R>>();
-        let _ = actor.register(self.address(), tx);
+        let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _ = actor.register(self.address(), tx, kill_tx);
         let _ = tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                match self.handler(msg.inner()).await {
-                    Ok(result) => {
-                        if let Some(result_tx) = msg.result_tx() {
-                            let _ = result_tx.send(result);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Handler's result has error: {:?}", e);
-                        if kill_in_error {
-                            break;
-                        }
-                    }
-                }
+            loop {
+                tokio::select! {
+                   Some(msg) = rx.recv() => {
+                      match self.handler(msg.inner()).await {
+                          Ok(result) => {
+                              if let Some(result_tx) = msg.result_tx() {
+                                  let _ = result_tx.send(result);
+                              }
+                          }
+                          Err(e) => {
+                              error!("Handler's result has error: {:?}", e);
+                              if kill_in_error {
+                                  break;
+                              }
+                          }
+                      }
+                   }
+                   Some(_) = kill_rx.recv() => {
+                       break;
+                   }
+                };
             }
         });
     }
@@ -44,7 +52,13 @@ where
 
 #[derive(Clone)]
 pub struct Actor<T, R> {
-    map: HashMap<String, tokio::sync::mpsc::UnboundedSender<Message<T, R>>>,
+    map: HashMap<
+        String,
+        (
+            tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
+            tokio::sync::mpsc::UnboundedSender<()>,
+        ),
+    >,
 }
 
 impl<T, R> Actor<T, R>
@@ -62,16 +76,20 @@ where
         &mut self,
         address: String,
         tx: tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
+        kill_tx: tokio::sync::mpsc::UnboundedSender<()>,
     ) {
-        self.map.insert(address, tx);
+        self.map.insert(address, (tx, kill_tx));
     }
 
     pub fn unregister(&mut self, address: String) {
-        self.map.remove(&address);
+        if let Some((_tx, kill_tx)) = self.map.get(&address) {
+            let _ = kill_tx.send(());
+            self.map.remove(&address);
+        }
     }
 
     pub fn send(&self, address: String, msg: T) -> Result<(), ActorError<T, R>> {
-        if let Some(tx) = self.map.get(&address) {
+        if let Some((tx, _kill_tx)) = self.map.get(&address) {
             let _ = tx.send(Message::new(msg, None))?;
             Ok(())
         } else {
@@ -80,7 +98,7 @@ where
     }
 
     pub async fn send_and_recv(&self, address: String, msg: T) -> Result<R, ActorError<T, R>> {
-        if let Some(tx) = self.map.get(&address) {
+        if let Some((tx, _kill_tx)) = self.map.get(&address) {
             let (result_tx, result_rx) = tokio::sync::oneshot::channel::<R>();
             let _ = tx.send(Message::new(msg, Some(result_tx)))?;
             Ok(result_rx.await?)
@@ -101,7 +119,7 @@ where
         >,
         ActorError<T, R>,
     > {
-        if let Some(tx) = self.map.get(&address) {
+        if let Some((tx, _kill_tx)) = self.map.get(&address) {
             let tx = tx.clone();
             if subscript {
                 let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
