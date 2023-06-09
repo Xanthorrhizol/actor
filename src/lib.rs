@@ -15,31 +15,31 @@ where
     R: Sized + Send + 'static,
     E: Error + Send,
 {
-    fn address(&self) -> String;
+    fn address(&self) -> &str;
 
     async fn handler(&mut self, msg: T) -> Result<R, E>;
 
     fn register(mut self, actor: &mut Actor<T, R>, kill_in_error: bool) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message<T, R>>();
         let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel();
-        let _ = actor.register(self.address(), tx, kill_tx);
+        let _ = actor.register(self.address().to_string(), tx, kill_tx);
         let _ = tokio::spawn(async move {
             loop {
                 tokio::select! {
                    Some(msg) = rx.recv() => {
-                      match self.handler(msg.inner()).await {
-                          Ok(result) => {
-                              if let Some(result_tx) = msg.result_tx() {
-                                  let _ = result_tx.send(result);
-                              }
-                          }
-                          Err(e) => {
-                              error!("Handler's result has error: {:?}", e);
-                              if kill_in_error {
-                                  break;
-                              }
-                          }
-                      }
+                       match self.handler(msg.inner()).await {
+                           Ok(result) => {
+                               if let Some(result_tx) = msg.result_tx() {
+                                   let _ = result_tx.send(result);
+                               }
+                           }
+                           Err(e) => {
+                               error!("Handler's result has error: {:?}", e);
+                               if kill_in_error {
+                                   break;
+                               }
+                           }
+                       }
                    }
                    Some(_) = kill_rx.recv() => {
                        break;
