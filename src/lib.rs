@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::error::Error;
 
 #[async_trait::async_trait]
-pub trait Handler<T, R, E>
+pub trait Actor<T, R, E>
 where
     Self: Sized + Send + Sync + 'static,
     T: Sized + Send + Clone + Sync + 'static,
@@ -17,9 +17,9 @@ where
 {
     fn address(&self) -> &str;
 
-    async fn handler(&mut self, msg: T) -> Result<R, E>;
+    async fn actor(&mut self, msg: T) -> Result<R, E>;
 
-    fn register(mut self, actor: &mut Actor<T, R>, kill_in_error: bool) {
+    fn register(mut self, actor: &mut ActorSystem<T, R>, kill_in_error: bool) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message<T, R>>();
         let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel();
         let _ = actor.register(self.address().to_string(), tx, kill_tx);
@@ -27,7 +27,7 @@ where
             loop {
                 tokio::select! {
                    Some(msg) = rx.recv() => {
-                       match self.handler(msg.inner()).await {
+                       match self.actor(msg.inner()).await {
                            Ok(result) => {
                                if let Some(result_tx) = msg.result_tx() {
                                    let _ = result_tx.send(result);
@@ -51,7 +51,7 @@ where
 }
 
 #[derive(Clone)]
-pub struct Actor<T, R> {
+pub struct ActorSystem<T, R> {
     map: HashMap<
         String,
         (
@@ -61,7 +61,7 @@ pub struct Actor<T, R> {
     >,
 }
 
-impl<T, R> Actor<T, R>
+impl<T, R> ActorSystem<T, R>
 where
     T: Sized + Send + Clone + Sync + 'static,
     R: Sized + Send + 'static,
