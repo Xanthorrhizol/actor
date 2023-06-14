@@ -19,12 +19,14 @@ pub enum LifeCycle {
 #[async_trait::async_trait]
 pub trait Actor<T, R, E>
 where
-    Self: Clone + Sized + Send + Sync + 'static,
+    Self: Sized + Send + Sync + 'static,
     T: Sized + Send + Clone + Sync + 'static,
     R: Sized + Send + 'static,
     E: Error + Send + 'static,
 {
     fn address(&self) -> &str;
+
+    async fn clone(&self) -> Self;
 
     async fn actor(&mut self, msg: T) -> Result<R, E>;
 
@@ -56,7 +58,7 @@ where
             );
             self.pre_start(actor_system).await;
             restarted = true;
-            let mut self_clone = self.clone();
+            let mut self_clone = self.clone().await;
             let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Receiving);
             if let Ok(None) = tokio::spawn(async move {
                 loop {
