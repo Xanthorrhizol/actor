@@ -31,7 +31,7 @@ where
 
     async fn clone(&self) -> Result<Self, E>;
 
-    async fn actor(&mut self, msg: T) -> Result<R, ActorError<T, R>>;
+    async fn actor(&mut self, msg: T) -> Result<R, E>;
 
     async fn pre_start(&mut self, actor_system: &mut ActorSystem<T, R>);
 
