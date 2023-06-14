@@ -1,7 +1,7 @@
-pub mod error;
+mod error;
 pub mod types;
 
-use crate::error::ActorError;
+pub use crate::error::ActorError;
 pub use crate::types::{JobSpec, Message};
 use log::error;
 use std::collections::HashMap;
