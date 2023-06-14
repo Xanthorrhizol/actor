@@ -13,4 +13,7 @@ where
     OneshotRecv(#[from] tokio::sync::oneshot::error::RecvError),
     #[error(transparent)]
     UnboundedChannelSend(#[from] tokio::sync::mpsc::error::SendError<Message<T, R>>),
+
+    #[error("Actor clone failed: {0}")]
+    CloneFailed(String),
 }

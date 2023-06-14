@@ -26,9 +26,9 @@ where
 {
     fn address(&self) -> &str;
 
-    async fn clone(&self) -> Self;
+    async fn clone(&self) -> Result<Self, E>;
 
-    async fn actor(&mut self, msg: T) -> Result<R, E>;
+    async fn actor(&mut self, msg: T) -> Result<R, ActorError<T, R>>;
 
     async fn pre_start(&mut self, actor_system: &mut ActorSystem<T, R>);
 
@@ -38,7 +38,11 @@ where
 
     async fn post_restart(&mut self, actor_system: &mut ActorSystem<T, R>);
 
-    async fn run_actor(&mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
+    async fn run_actor(
+        &mut self,
+        actor_system: &mut ActorSystem<T, R>,
+        kill_in_error: bool,
+    ) -> Result<(), ActorError<T, R>> {
         let mut restarted = false;
         loop {
             if restarted {
@@ -58,7 +62,17 @@ where
             );
             self.pre_start(actor_system).await;
             restarted = true;
-            let mut self_clone = self.clone().await;
+            let mut self_clone = match self.clone().await {
+                Ok(result) => result,
+                Err(e) => {
+                    error!(
+                        "Clone actor failed: address={}, error={:?}",
+                        self.address(),
+                        e
+                    );
+                    Err(ActorError::CloneFailed(self.address().to_string()))?
+                }
+            };
             let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Receiving);
             if let Ok(None) = tokio::spawn(async move {
                 loop {
@@ -71,7 +85,7 @@ where
                                    }
                                }
                                Err(e) => {
-                                   error!("Handler's result has error: {:?}", e);
+                                   error!("Handler's result has error: {}", e.to_string());
                                    if kill_in_error {
                                        break Some(e);
                                    }
@@ -89,7 +103,7 @@ where
                 let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Stopping);
                 self.post_stop(actor_system).await;
                 let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Terminated);
-                break;
+                break Ok(());
             }
             let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Stopping);
             self.pre_restart(actor_system).await;
