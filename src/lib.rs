@@ -17,14 +17,17 @@ pub enum LifeCycle {
 }
 
 #[async_trait::async_trait]
-pub trait Actor<T, R, E>
+pub trait Actor<T, R, E, P>
 where
     Self: Sized + Send + Sync + 'static,
     T: Sized + Send + Clone + Sync + 'static,
     R: Sized + Send + 'static,
     E: Error + Send + 'static,
+    P: Clone,
 {
     fn address(&self) -> &str;
+
+    async fn new(params: P) -> Result<Self, E>;
 
     async fn clone(&self) -> Result<Self, E>;
 
