@@ -45,6 +45,7 @@ where
         &mut self,
         actor_system: &mut ActorSystem<T, R>,
         kill_in_error: bool,
+        ready_tx: tokio::sync::mpsc::UnboundedSender<()>,
     ) -> Result<(), ActorError<T, R>> {
         let mut restarted = false;
         loop {
@@ -64,6 +65,7 @@ where
                 },
             );
             self.pre_start(actor_system).await;
+            let _ = ready_tx.send(());
             restarted = true;
             let mut self_clone = match self.clone().await {
                 Ok(result) => result,
@@ -114,7 +116,9 @@ where
         }
     }
     async fn register(&mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
-        let _ = self.run_actor(actor_system, kill_in_error);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let _ = self.run_actor(actor_system, kill_in_error, tx);
+        let _ = rx.recv().await;
     }
 }
 
