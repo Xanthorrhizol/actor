@@ -84,7 +84,6 @@ where
                 },
             ));
             self.pre_start().await;
-            let _ = ready_tx.send(());
             restarted = true;
             let mut self_clone = match self.clone().await {
                 Ok(result) => result,
@@ -101,6 +100,7 @@ where
                 self.address().to_string(),
                 LifeCycle::Receiving,
             ));
+            let _ = ready_tx.send(());
             if let Ok(None) = tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -149,14 +149,15 @@ where
             ));
         }
     }
-    async fn register(
-        &'static mut self,
-        actor_system: &mut ActorSystem<T, R>,
-        kill_in_error: bool,
-    ) {
+    async fn register(&mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let actor_system_tx = actor_system.handler_tx();
-        let _ = tokio::spawn(self.run_actor(actor_system_tx, kill_in_error, tx));
+        let mut self_clone = self.clone().await.unwrap();
+        let _ = tokio::spawn(async move {
+            self_clone
+                .run_actor(actor_system_tx, kill_in_error, tx)
+                .await
+        });
         let _ = rx.recv().await;
     }
 }
