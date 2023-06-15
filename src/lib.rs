@@ -7,6 +7,25 @@ use log::error;
 use std::collections::HashMap;
 use std::error::Error;
 
+enum ActorSystemCmd<T, R>
+where
+    T: Sized + Send + Clone + Sync + 'static,
+    R: Sized + Send + 'static,
+{
+    Register(
+        String,
+        tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
+        tokio::sync::mpsc::UnboundedSender<()>,
+        LifeCycle,
+    ),
+    Unregister(String),
+    FindActor(
+        String,
+        tokio::sync::oneshot::Sender<Option<tokio::sync::mpsc::UnboundedSender<Message<T, R>>>>,
+    ),
+    SetLifeCycle(String, LifeCycle),
+}
+
 #[derive(Clone)]
 pub enum LifeCycle {
     Starting,
@@ -122,16 +141,9 @@ where
     }
 }
 
-#[derive(Clone)]
-pub struct ActorSystem<T, R> {
-    map: HashMap<
-        String,
-        (
-            tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
-            tokio::sync::mpsc::UnboundedSender<()>,
-            LifeCycle,
-        ),
-    >,
+pub struct ActorSystem<T: Clone + Send + Sync + 'static, R: Send + 'static> {
+    _handler: Option<tokio::task::JoinHandle<()>>,
+    handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>>,
 }
 
 impl<T, R> ActorSystem<T, R>
@@ -140,9 +152,51 @@ where
     R: Sized + Send + 'static,
 {
     pub fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-        }
+        let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut me = Self {
+            _handler: None,
+            handler_tx,
+        };
+        me.run(handler_rx);
+        me
+    }
+
+    fn run(&mut self, mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd<T, R>>) {
+        self._handler = Some(tokio::spawn(async move {
+            let mut map = HashMap::<
+                String,
+                (
+                    tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
+                    tokio::sync::mpsc::UnboundedSender<()>,
+                    LifeCycle,
+                ),
+            >::new();
+            while let Some(msg) = handler_rx.recv().await {
+                match msg {
+                    ActorSystemCmd::Register(address, tx, kill_tx, life_cycle) => {
+                        map.insert(address, (tx, kill_tx, life_cycle));
+                    }
+                    ActorSystemCmd::Unregister(address) => {
+                        if let Some((_tx, kill_tx, _life_cycle)) = map.get(&address) {
+                            let _ = kill_tx.send(());
+                            map.remove(&address);
+                        }
+                    }
+                    ActorSystemCmd::FindActor(address, result_tx) => {
+                        if let Some((tx, _kill_tx, _life_cycle)) = map.get(&address) {
+                            let _ = result_tx.send(Some(tx.clone()));
+                        } else {
+                            let _ = result_tx.send(None);
+                        }
+                    }
+                    ActorSystemCmd::SetLifeCycle(address, life_cycle) => {
+                        if let Some(actor) = map.get_mut(&address) {
+                            actor.2 = life_cycle;
+                        };
+                    }
+                };
+            }
+        }));
     }
 
     pub fn register(
@@ -152,31 +206,28 @@ where
         kill_tx: tokio::sync::mpsc::UnboundedSender<()>,
         life_cycle: LifeCycle,
     ) {
-        self.map.insert(address, (tx, kill_tx, life_cycle));
+        let _ = self
+            .handler_tx
+            .send(ActorSystemCmd::Register(address, tx, kill_tx, life_cycle));
     }
 
-    pub fn set_lifecycle(
-        &mut self,
-        address: &str,
-        life_cycle: LifeCycle,
-    ) -> Result<(), ActorError<T, R>> {
-        if let Some(actor) = self.map.get_mut(address) {
-            actor.2 = life_cycle;
-            Ok(())
-        } else {
-            Err(ActorError::AddressNotFound(address.to_string()))
-        }
+    pub fn set_lifecycle(&mut self, address: &str, life_cycle: LifeCycle) {
+        let _ = self.handler_tx.send(ActorSystemCmd::SetLifeCycle(
+            address.to_string(),
+            life_cycle,
+        ));
     }
 
     pub fn unregister(&mut self, address: String) {
-        if let Some((_tx, kill_tx, _life_cycle)) = self.map.get(&address) {
-            let _ = kill_tx.send(());
-            self.map.remove(&address);
-        }
+        let _ = self.handler_tx.send(ActorSystemCmd::Unregister(address));
     }
 
-    pub fn send(&self, address: String, msg: T) -> Result<(), ActorError<T, R>> {
-        if let Some((tx, _kill_tx, _life_cycle)) = self.map.get(&address) {
+    pub async fn send(&self, address: String, msg: T) -> Result<(), ActorError<T, R>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .handler_tx
+            .send(ActorSystemCmd::FindActor(address.clone(), tx));
+        if let Ok(Some(tx)) = rx.await {
             let _ = tx.send(Message::new(msg, None))?;
             Ok(())
         } else {
@@ -185,7 +236,11 @@ where
     }
 
     pub async fn send_and_recv(&self, address: String, msg: T) -> Result<R, ActorError<T, R>> {
-        if let Some((tx, _kill_tx, _life_cycle)) = self.map.get(&address) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .handler_tx
+            .send(ActorSystemCmd::FindActor(address.clone(), tx));
+        if let Ok(Some(tx)) = rx.await {
             let (result_tx, result_rx) = tokio::sync::oneshot::channel::<R>();
             let _ = tx.send(Message::new(msg, Some(result_tx)))?;
             Ok(result_rx.await?)
@@ -206,7 +261,11 @@ where
         >,
         ActorError<T, R>,
     > {
-        if let Some((tx, _kill_tx, _life_cycle)) = self.map.get(&address) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .handler_tx
+            .send(ActorSystemCmd::FindActor(address.clone(), tx));
+        if let Ok(Some(tx)) = rx.await {
             let tx = tx.clone();
             if subscript {
                 let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
