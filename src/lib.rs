@@ -7,7 +7,7 @@ use log::error;
 use std::collections::HashMap;
 use std::error::Error;
 
-enum ActorSystemCmd<T, R>
+pub enum ActorSystemCmd<T, R>
 where
     T: Sized + Send + Clone + Sync + 'static,
     R: Sized + Send + 'static,
@@ -52,28 +52,28 @@ where
 
     async fn actor(&mut self, msg: T) -> Result<R, E>;
 
-    async fn pre_start(&mut self, actor_system: &mut ActorSystem<T, R>);
+    async fn pre_start(&mut self);
 
-    async fn pre_restart(&mut self, actor_system: &mut ActorSystem<T, R>);
+    async fn pre_restart(&mut self);
 
-    async fn post_stop(&mut self, actor_system: &mut ActorSystem<T, R>);
+    async fn post_stop(&mut self);
 
-    async fn post_restart(&mut self, actor_system: &mut ActorSystem<T, R>);
+    async fn post_restart(&mut self);
 
     async fn run_actor(
         &mut self,
-        actor_system: &mut ActorSystem<T, R>,
+        actor_system_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>>,
         kill_in_error: bool,
         ready_tx: tokio::sync::mpsc::UnboundedSender<()>,
     ) -> Result<(), ActorError<T, R>> {
         let mut restarted = false;
         loop {
             if restarted {
-                self.post_restart(actor_system).await;
+                self.post_restart().await;
             }
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message<T, R>>();
             let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-            let _ = actor_system.register(
+            let _ = actor_system_tx.send(ActorSystemCmd::Register(
                 self.address().to_string(),
                 tx,
                 kill_tx,
@@ -82,8 +82,8 @@ where
                 } else {
                     LifeCycle::Starting
                 },
-            );
-            self.pre_start(actor_system).await;
+            ));
+            self.pre_start().await;
             let _ = ready_tx.send(());
             restarted = true;
             let mut self_clone = match self.clone().await {
@@ -97,7 +97,10 @@ where
                     Err(ActorError::CloneFailed(self.address().to_string()))?
                 }
             };
-            let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Receiving);
+            let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle(
+                self.address().to_string(),
+                LifeCycle::Receiving,
+            ));
             if let Ok(None) = tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -124,19 +127,36 @@ where
             })
             .await
             {
-                let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Stopping);
-                self.post_stop(actor_system).await;
-                let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Terminated);
+                let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle(
+                    self.address().to_string(),
+                    LifeCycle::Stopping,
+                ));
+                self.post_stop().await;
+                let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle(
+                    self.address().to_string(),
+                    LifeCycle::Terminated,
+                ));
                 break Ok(());
             }
-            let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Stopping);
-            self.pre_restart(actor_system).await;
-            let _ = actor_system.set_lifecycle(self.address(), LifeCycle::Restarting);
+            let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle(
+                self.address().to_string(),
+                LifeCycle::Stopping,
+            ));
+            self.pre_restart().await;
+            let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle(
+                self.address().to_string(),
+                LifeCycle::Restarting,
+            ));
         }
     }
-    async fn register(&mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
+    async fn register(
+        &'static mut self,
+        actor_system: &mut ActorSystem<T, R>,
+        kill_in_error: bool,
+    ) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let _ = self.run_actor(actor_system, kill_in_error, tx);
+        let actor_system_tx = actor_system.handler_tx();
+        let _ = tokio::spawn(self.run_actor(actor_system_tx, kill_in_error, tx));
         let _ = rx.recv().await;
     }
 }
@@ -159,6 +179,10 @@ where
         };
         me.run(handler_rx);
         me
+    }
+
+    pub fn handler_tx(&self) -> tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>> {
+        self.handler_tx.clone()
     }
 
     fn run(&mut self, mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd<T, R>>) {
