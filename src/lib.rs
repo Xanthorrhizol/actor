@@ -17,6 +17,7 @@ where
         tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
         tokio::sync::mpsc::UnboundedSender<()>,
         LifeCycle,
+        tokio::sync::oneshot::Sender<()>,
     ),
     Unregister(String),
     FindActor(
@@ -73,6 +74,8 @@ where
             }
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message<T, R>>();
             let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
             let _ = actor_system_tx.send(ActorSystemCmd::Register(
                 self.address().to_string(),
                 tx,
@@ -82,7 +85,9 @@ where
                 } else {
                     LifeCycle::Starting
                 },
+                result_tx,
             ));
+            let _ = result_rx.await;
             self.pre_start().await;
             restarted = true;
             let mut self_clone = match self.clone().await {
@@ -198,8 +203,9 @@ where
             >::new();
             while let Some(msg) = handler_rx.recv().await {
                 match msg {
-                    ActorSystemCmd::Register(address, tx, kill_tx, life_cycle) => {
-                        map.insert(address, (tx, kill_tx, life_cycle));
+                    ActorSystemCmd::Register(address, tx, kill_tx, life_cycle, result_tx) => {
+                        map.insert(address.clone(), (tx, kill_tx, life_cycle));
+                        let _ = result_tx.send(());
                     }
                     ActorSystemCmd::Unregister(address) => {
                         if let Some((_tx, kill_tx, _life_cycle)) = map.get(&address) {
@@ -224,16 +230,18 @@ where
         }));
     }
 
-    pub fn register(
+    pub async fn register(
         &mut self,
         address: String,
         tx: tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
         kill_tx: tokio::sync::mpsc::UnboundedSender<()>,
         life_cycle: LifeCycle,
     ) {
-        let _ = self
-            .handler_tx
-            .send(ActorSystemCmd::Register(address, tx, kill_tx, life_cycle));
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let _ = self.handler_tx.send(ActorSystemCmd::Register(
+            address, tx, kill_tx, life_cycle, result_tx,
+        ));
+        let _ = result_rx.await;
     }
 
     pub fn set_lifecycle(&mut self, address: &str, life_cycle: LifeCycle) {
