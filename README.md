@@ -55,10 +55,6 @@ impl Actor<MyMessage, (), MyError<MyMessage, ()>, String> for MyActor {
     Self { address: params }
   }
 
-  async fn clone(&self) -> Result<Self, MyError<MyMessage, ()>>  {
-      Ok(Self::new(self.address().to_string()))
-  }
-
   async fn actor(
     &mut self, msg: MyMessage,
   ) -> Result<(), MyError<MyMessage, ()>> {
