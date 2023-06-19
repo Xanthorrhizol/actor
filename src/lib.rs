@@ -49,8 +49,6 @@ where
 
     async fn new(params: P) -> Result<Self, E>;
 
-    async fn clone(&self) -> Result<Self, E>;
-
     async fn actor(&mut self, msg: T) -> Result<R, E>;
 
     async fn pre_start(&mut self);
@@ -90,48 +88,33 @@ where
             let _ = result_rx.await;
             self.pre_start().await;
             restarted = true;
-            let mut self_clone = match self.clone().await {
-                Ok(result) => result,
-                Err(e) => {
-                    error!(
-                        "Clone actor failed: address={}, error={:?}",
-                        self.address(),
-                        e
-                    );
-                    Err(ActorError::CloneFailed(self.address().to_string()))?
-                }
-            };
             let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle(
                 self.address().to_string(),
                 LifeCycle::Receiving,
             ));
             let _ = ready_tx.send(());
-            if let Ok(None) = tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                       Some(msg) = rx.recv() => {
-                           match self_clone.actor(msg.inner()).await {
-                               Ok(result) => {
-                                   if let Some(result_tx) = msg.result_tx() {
-                                       let _ = result_tx.send(result);
-                                   }
+            if let None = loop {
+                tokio::select! {
+                   Some(msg) = rx.recv() => {
+                       match self.actor(msg.inner()).await {
+                           Ok(result) => {
+                               if let Some(result_tx) = msg.result_tx() {
+                                   let _ = result_tx.send(result);
                                }
-                               Err(e) => {
-                                   error!("Handler's result has error: {}", e.to_string());
-                                   if kill_in_error {
-                                       break Some(e);
-                                   }
+                           }
+                           Err(e) => {
+                               error!("Handler's result has error: {}", e.to_string());
+                               if kill_in_error {
+                                   break Some(e);
                                }
                            }
                        }
-                       Some(_) = kill_rx.recv() => {
-                           break None;
-                       }
-                    };
-                }
-            })
-            .await
-            {
+                   }
+                   Some(_) = kill_rx.recv() => {
+                       break None;
+                   }
+                };
+            } {
                 let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle(
                     self.address().to_string(),
                     LifeCycle::Stopping,
@@ -154,15 +137,11 @@ where
             ));
         }
     }
-    async fn register(&mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
+    async fn register(mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let actor_system_tx = actor_system.handler_tx();
-        let mut self_clone = self.clone().await.unwrap();
-        let _ = tokio::spawn(async move {
-            self_clone
-                .run_actor(actor_system_tx, kill_in_error, tx)
-                .await
-        });
+        let _ =
+            tokio::spawn(async move { self.run_actor(actor_system_tx, kill_in_error, tx).await });
         let _ = rx.recv().await;
     }
 }
