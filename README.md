@@ -11,13 +11,13 @@ actor = { git = "ssh://git@github.com/Xanthorrhizol/actor", branch = "main" }
 2. create a actor as mutable
 
 ```rust
-use actor::Actor;
+use actor::ActorSystem;
 ...
 
-let mut actor = Actor::new();
+let mut actor_system = ActorSystem::new();
 ```
 
-3. declare Handler to register
+3. declare Actor to register
 
 ```rust
 use crate::actor::{Actor, Handler, Message, error::ActorError};
@@ -41,23 +41,25 @@ where
   ActorError(#[from] ActorError<T, R>),
 }
 
-struct MyHandler {
+struct MyActor {
   address: String,
 }
 
-impl MyHandler {
-  pub fn new(address: String) -> Self {
-    Self { address }
-  }
-}
-
 #[async_trait::async_trait]
-impl Handler<MyMessage, (), MyError<MyMessage, ()>> for MyHandler {
-  fn address(&self) -> String {
-    self.address.clone()
+impl Actor<MyMessage, (), MyError<MyMessage, ()>, String> for MyActor {
+  fn address(&self) -> &str {
+    &self.address
   }
 
-  async fn handler(
+  async fn new(params: String) -> Self {
+    Self { address: params }
+  }
+
+  async fn clone(&self) -> Result<Self, MyError<MyMessage, ()>>  {
+      Ok(Self::new(self.address().to_string()))
+  }
+
+  async fn actor(
     &mut self, msg: MyMessage,
   ) -> Result<(), MyError<MyMessage, ()>> {
     match msg {
@@ -74,24 +76,29 @@ impl Handler<MyMessage, (), MyError<MyMessage, ()>> for MyHandler {
     }
     Ok(())
   }
+
+  async fn pre_start(&mut self) {}
+  async fn pre_restart(&mut self) {}
+  async fn post_stop(&mut self) {}
+  async fn post_restart(&mut self) {}
 }
 ```
 
-4. register handler into actor
+4. register actor into actor system
 
 ```rust
-let handler = MyHandler::new("some-address".to_string());
-handler.register(&mut actor);
+let actor = MyActor::new("some-address".to_string());
+actor.register(&mut actor_system);
 ```
 
 5. use it
 
 ```rust
-let _ = actor.send(
+let _ = actor_system.send(
   "some-address".to_string(), /* address */
   MyMessage::A("a".to_string()), /* message */
 );
-let result = actor.send_and_recv(
+let result = actor_system.send_and_recv(
   "some-address".to_string(), /* address */
   MyMessage::B("b".to_string()), /* message */
 ).await;
@@ -110,14 +117,12 @@ let job = JobSpec::new(
   Some(std::time::Duration::from_secs(3)), /* interval */
   std::time::SystemTime::now(), /* start_at */
 );
-let recv_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>> = actor.run_job(
+if let Some(recv_rx) = actor_system.run_job(
   "some-address".to_string(), /* address */
-  true, /* whether subscribe the handler result or not(if true, it returns Some(rx)) */
+  true, /* whether subscribe the handler result or not(true => Some(rx)) */
   job, /* job as JobSpec */
   MyMessage::C("c".to_string()), /* message */
-);
-
-if let Some(recv_rx) = recv_rx {
+) {
     while let Some(result) = recv_rx.recv().await {
         println!("result returned");
     }
