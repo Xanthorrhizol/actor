@@ -46,7 +46,10 @@ struct MyActor {
 }
 
 #[async_trait::async_trait]
-impl Actor<MyMessage, (), MyError<MyMessage, ()>, String> for MyActor {
+impl Actor<MyMessage, (), MyError<MyMessage, ()>, String> for MyActor
+where
+    Self: Send + Sized + Sync + 'static,
+{
   fn address(&self) -> &str {
     &self.address
   }
