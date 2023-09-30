@@ -172,16 +172,19 @@ where
             while let Some(msg) = handler_rx.recv().await {
                 match msg {
                     ActorSystemCmd::Register(address, tx, kill_tx, life_cycle, result_tx) => {
+                        debug!("Register actor with address {}", address);
                         map.insert(address.clone(), (tx, kill_tx, life_cycle));
                         let _ = result_tx.send(());
                     }
                     ActorSystemCmd::Unregister(address) => {
+                        debug!("Unregister actor with address {}", address);
                         if let Some((_tx, kill_tx, _life_cycle)) = map.get(&address) {
                             let _ = kill_tx.send(());
                             map.remove(&address);
                         }
                     }
                     ActorSystemCmd::FindActor(address, result_tx) => {
+                        debug!("FindActor with address {}", address);
                         if let Some((tx, _kill_tx, life_cycle)) = map.get(&address) {
                             let _ = result_tx.send(Some((
                                 tx.clone(),
@@ -195,6 +198,10 @@ where
                         }
                     }
                     ActorSystemCmd::SetLifeCycle(address, life_cycle) => {
+                        debug!(
+                            "SetLifecycle with address {} into {:?}",
+                            address, life_cycle
+                        );
                         if let Some(actor) = map.get_mut(&address) {
                             actor.2 = life_cycle;
                         };
