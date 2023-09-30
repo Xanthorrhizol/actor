@@ -33,7 +33,6 @@ where
     T: Sized + Send + Clone + Sync + 'static,
     R: Sized + Send + 'static,
     E: Error + Send + 'static,
-    P: Clone,
 {
     fn address(&self) -> &str;
 
