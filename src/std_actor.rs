@@ -126,7 +126,7 @@ where
             ));
         }
     }
-    async fn register(mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
+    fn register(mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
         let (tx, rx) = std::sync::mpsc::channel();
         let actor_system_tx = actor_system.handler_tx();
         let _ = std::thread::spawn(move || async move {
@@ -173,6 +173,7 @@ where
             while let Ok(msg) = handler_rx.recv() {
                 match msg {
                     ActorSystemCmd::Register(address, tx, kill_tx, life_cycle, result_tx) => {
+                        debug!("Register {}", address);
                         map.insert(address.clone(), (tx, kill_tx, life_cycle));
                         let _ = result_tx.send(());
                     }
@@ -183,6 +184,7 @@ where
                         }
                     }
                     ActorSystemCmd::FindActor(address, result_tx) => {
+                        debug!("FindActor for {}", address);
                         if let Some((tx, _kill_tx, life_cycle)) = map.get(&address) {
                             let _ = result_tx.send(Some((
                                 tx.clone(),
@@ -196,6 +198,7 @@ where
                         }
                     }
                     ActorSystemCmd::SetLifeCycle(address, life_cycle) => {
+                        debug!("SetLifecycle for {} into {:?}", address, life_cycle);
                         if let Some(actor) = map.get_mut(&address) {
                             actor.2 = life_cycle;
                         };
