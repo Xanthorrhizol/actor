@@ -92,10 +92,11 @@ where
                                }
                            }
                            Err(e) => {
-                               error!("Handler's result has error: {}", e.to_string());
                                if kill_in_error {
+                               error!("Handler's result has error: {:?}", e);
                                    break Some(e);
                                }
+                               debug!("Handler's result has error: {:?}", e);
                            }
                        }
                    }
