@@ -5,13 +5,13 @@
 1. add actor in Cargo.toml
 
 ```toml
-actor = { git = "ssh://git@github.com/Xanthorrhizol/actor", branch = "main", feature = ["sync"] }
+xan-actor = { git = "ssh://git@github.com/Xanthorrhizol/actor", branch = "main", feature = ["sync"] }
 ```
 
 2. create a actor as mutable
 
 ```rust
-use actor::ActorSystem;
+use xan_actor::ActorSystem;
 ...
 
 let mut actor_system = ActorSystem::new();
@@ -20,7 +20,7 @@ let mut actor_system = ActorSystem::new();
 3. declare Actor to register
 
 ```rust
-use crate::actor::{Actor, Handler, Message, error::ActorError};
+use crate::xan_actor::{Actor, Handler, Message, error::ActorError};
 
 #[derive(Clone, Debug)]
 pub enum MyMessage {
@@ -108,7 +108,7 @@ let result = actor_system.send_and_recv(
 - If you send message at some time or with some iteration, you can use job
 
 ```rust
-use actor::JobSpec;
+use xan_actor::JobSpec;
 ...
 
 let job = JobSpec::new(
@@ -135,13 +135,13 @@ if let Some(recv_rx) = actor_system.run_job(
 1. add actor in Cargo.toml
 
 ```toml
-actor = { git = "ssh://git@github.com/Xanthorrhizol/actor", branch = "main", feature = ["tokio"] }
+xan-actor = { git = "ssh://git@github.com/Xanthorrhizol/actor", branch = "main", feature = ["tokio"] }
 ```
 
 2. create a actor as mutable
 
 ```rust
-use actor::ActorSystem;
+use xan_actor::ActorSystem;
 ...
 
 let mut actor_system = ActorSystem::new();
@@ -150,7 +150,7 @@ let mut actor_system = ActorSystem::new();
 3. declare Actor to register
 
 ```rust
-use crate::actor::{Actor, Handler, Message, error::ActorError};
+use crate::xan_actor::{Actor, Handler, Message, error::ActorError};
 
 #[derive(Clone, Debug)]
 pub enum MyMessage {
@@ -238,7 +238,7 @@ let result = actor_system.send_and_recv(
 - If you send message at some time or with some iteration, you can use job
 
 ```rust
-use actor::JobSpec;
+use xan_actor::JobSpec;
 ...
 
 let job = JobSpec::new(

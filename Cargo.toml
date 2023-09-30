@@ -1,8 +1,12 @@
 [package]
-name = "actor"
-version = "0.1.0"
+name = "xan-actor"
+version = "1.1.0"
 edition = "2021"
 authors = [ "Xanthorrhizol <xanthorrhizol@proton.me>" ]
+description = "Akka actor"
+readme = "README.md"
+license = "MIT"
+keywards = ["akka", "actor"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
