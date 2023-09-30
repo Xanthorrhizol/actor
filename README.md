@@ -5,7 +5,7 @@
 1. add actor in Cargo.toml
 
 ```toml
-xan-actor = { git = "ssh://git@github.com/Xanthorrhizol/actor", branch = "main", feature = ["sync"] }
+xan-actor = { version = "1.1.2", feature = ["sync"] }
 ```
 
 2. create a actor as mutable
@@ -135,7 +135,7 @@ if let Some(recv_rx) = actor_system.run_job(
 1. add actor in Cargo.toml
 
 ```toml
-xan-actor = { git = "ssh://git@github.com/Xanthorrhizol/actor", branch = "main", feature = ["tokio"] }
+xan-actor = { version = "1.1.2", feature = ["tokio"] }
 ```
 
 2. create a actor as mutable
