@@ -7,7 +7,7 @@ authors = [ "Xanthorrhizol <xanthorrhizol@proton.me>" ]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-std = ["dep:oneshot"]
+sync = []
 tokio = ["dep:tokio"]
 
 [dependencies]
@@ -15,4 +15,3 @@ async-trait = "0.1.68"
 log = "0.4.17"
 thiserror = "1.0.40"
 tokio = { version = "1.28.1", features = ["full"], optional = true }
-oneshot = { version = "0.1.6", optional = true }

@@ -1,6 +1,6 @@
 mod error;
-#[cfg(feature = "std")]
-pub mod std_actor;
+#[cfg(feature = "sync")]
+pub mod sync_actor;
 #[cfg(feature = "tokio")]
 pub mod tokio_actor;
 pub mod types;
@@ -13,9 +13,9 @@ pub use std_actor::*;
 pub use tokio_actor::*;
 
 #[macro_use]
-extern crate log;
+pub extern crate log;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum LifeCycle {
     Starting,
     Receiving,

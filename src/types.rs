@@ -28,7 +28,7 @@ where
 #[derive(Debug)]
 pub struct Message<T, R> {
     inner: T,
-    result_tx: Option<oneshot::Sender<R>>,
+    result_tx: Option<std::sync::mpsc::Sender<R>>,
 }
 
 #[cfg(feature = "std")]
@@ -37,7 +37,7 @@ where
     T: Sized + Send + Clone,
     R: Sized + Send,
 {
-    pub fn new(inner: T, result_tx: Option<oneshot::Sender<R>>) -> Self {
+    pub fn new(inner: T, result_tx: Option<std::sync::mpsc::Sender<R>>) -> Self {
         Self { inner, result_tx }
     }
 
@@ -45,7 +45,7 @@ where
         self.inner.clone()
     }
 
-    pub fn result_tx(self) -> Option<oneshot::Sender<R>> {
+    pub fn result_tx(self) -> Option<std::sync::mpsc::Sender<R>> {
         self.result_tx
     }
 }

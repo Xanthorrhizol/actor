@@ -14,19 +14,18 @@ where
         std::sync::mpsc::Sender<Message<T, R>>,
         std::sync::mpsc::Sender<()>,
         LifeCycle,
-        oneshot::Sender<()>,
+        std::sync::mpsc::Sender<()>,
     ),
     Unregister(String),
     FindActor(
         String,
-        oneshot::Sender<
+        std::sync::mpsc::Sender<
             Option<(std::sync::mpsc::Sender<Message<T, R>>, bool)>, // tx, ready
         >,
     ),
     SetLifeCycle(String, LifeCycle),
 }
 
-#[async_trait::async_trait]
 pub trait Actor<T, R, E, P>
 where
     Self: Sized + Send + Sync + 'static,
@@ -48,7 +47,7 @@ where
 
     fn post_restart(&mut self);
 
-    async fn run_actor(
+    fn run_actor(
         &mut self,
         actor_system_tx: std::sync::mpsc::Sender<ActorSystemCmd<T, R>>,
         kill_in_error: bool,
@@ -61,7 +60,7 @@ where
             }
             let (tx, rx) = std::sync::mpsc::channel::<Message<T, R>>();
             let (kill_tx, kill_rx) = std::sync::mpsc::channel::<()>();
-            let (result_tx, result_rx) = oneshot::channel();
+            let (result_tx, result_rx) = std::sync::mpsc::channel::<()>();
 
             let _ = actor_system_tx.send(ActorSystemCmd::Register(
                 self.address().to_string(),
@@ -74,7 +73,7 @@ where
                 },
                 result_tx,
             ));
-            let _ = result_rx.await;
+            let _ = result_rx.recv();
             self.pre_start();
             restarted = true;
             let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle(
@@ -96,10 +95,11 @@ where
                             }
                         }
                         Err(e) => {
-                            error!("Handler's result has error: {}", e.to_string());
                             if kill_in_error {
+                                error!("Handler's result has error: {}", e.to_string());
                                 break Some(e);
                             }
+                            debug!("Handler's result has error: {}", e.to_string());
                         }
                     }
                 }
@@ -129,8 +129,9 @@ where
     fn register(mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
         let (tx, rx) = std::sync::mpsc::channel();
         let actor_system_tx = actor_system.handler_tx();
-        let _ = std::thread::spawn(move || async move {
-            self.run_actor(actor_system_tx, kill_in_error, tx).await
+        let _ = std::thread::spawn(move || {
+            debug!("starting handler...");
+            self.run_actor(actor_system_tx, kill_in_error, tx)
         });
         let _ = rx.recv();
     }
@@ -173,18 +174,19 @@ where
             while let Ok(msg) = handler_rx.recv() {
                 match msg {
                     ActorSystemCmd::Register(address, tx, kill_tx, life_cycle, result_tx) => {
-                        debug!("Register {}", address);
+                        debug!("Register actor with address {}", address);
                         map.insert(address.clone(), (tx, kill_tx, life_cycle));
                         let _ = result_tx.send(());
                     }
                     ActorSystemCmd::Unregister(address) => {
+                        debug!("Unregister actor with address {}", address);
                         if let Some((_tx, kill_tx, _life_cycle)) = map.get(&address) {
                             let _ = kill_tx.send(());
                             map.remove(&address);
                         }
                     }
                     ActorSystemCmd::FindActor(address, result_tx) => {
-                        debug!("FindActor for {}", address);
+                        debug!("FindActor with address {}", address);
                         if let Some((tx, _kill_tx, life_cycle)) = map.get(&address) {
                             let _ = result_tx.send(Some((
                                 tx.clone(),
@@ -198,7 +200,10 @@ where
                         }
                     }
                     ActorSystemCmd::SetLifeCycle(address, life_cycle) => {
-                        debug!("SetLifecycle for {} into {:?}", address, life_cycle);
+                        debug!(
+                            "SetLifecycle with address {} into {:?}",
+                            address, life_cycle
+                        );
                         if let Some(actor) = map.get_mut(&address) {
                             actor.2 = life_cycle;
                         };
@@ -208,18 +213,18 @@ where
         }));
     }
 
-    pub async fn register(
+    pub fn register(
         &mut self,
         address: String,
         tx: std::sync::mpsc::Sender<Message<T, R>>,
         kill_tx: std::sync::mpsc::Sender<()>,
         life_cycle: LifeCycle,
     ) {
-        let (result_tx, result_rx) = oneshot::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
         let _ = self.handler_tx.send(ActorSystemCmd::Register(
             address, tx, kill_tx, life_cycle, result_tx,
         ));
-        let _ = result_rx.await;
+        let _ = result_rx.recv();
     }
 
     pub fn set_lifecycle(&mut self, address: &str, life_cycle: LifeCycle) {
@@ -233,12 +238,12 @@ where
         let _ = self.handler_tx.send(ActorSystemCmd::Unregister(address));
     }
 
-    pub async fn send(&self, address: String, msg: T) -> Result<(), ActorError<T, R>> {
-        let (tx, rx) = oneshot::channel();
+    pub fn send(&self, address: String, msg: T) -> Result<(), ActorError<T, R>> {
+        let (tx, rx) = std::sync::mpsc::channel();
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FindActor(address.clone(), tx));
-        if let Ok(Some((tx, ready))) = rx.await {
+        if let Ok(Some((tx, ready))) = rx.recv() {
             if ready {
                 let _ = tx.send(Message::new(msg, None))?;
                 Ok(())
@@ -250,16 +255,16 @@ where
         }
     }
 
-    pub async fn send_and_recv(&self, address: String, msg: T) -> Result<R, ActorError<T, R>> {
-        let (tx, rx) = oneshot::channel();
+    pub fn send_and_recv(&self, address: String, msg: T) -> Result<R, ActorError<T, R>> {
+        let (tx, rx) = std::sync::mpsc::channel();
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FindActor(address.clone(), tx));
-        if let Ok(Some((tx, ready))) = rx.await {
+        if let Ok(Some((tx, ready))) = rx.recv() {
             if ready {
-                let (result_tx, result_rx) = oneshot::channel::<R>();
+                let (result_tx, result_rx) = std::sync::mpsc::channel::<R>();
                 let _ = tx.send(Message::new(msg, Some(result_tx)))?;
-                Ok(result_rx.await?)
+                Ok(result_rx.recv()?)
             } else {
                 Err(ActorError::ActorNotReady(address))
             }
@@ -268,32 +273,34 @@ where
         }
     }
 
-    pub async fn run_job(
+    pub fn run_job(
         &self,
         address: String,
         subscript: bool,
         job: JobSpec,
         msg: T,
-    ) -> Result<Option<std::sync::mpsc::Receiver<Result<R, oneshot::RecvError>>>, ActorError<T, R>>
-    {
-        let (tx, rx) = oneshot::channel();
+    ) -> Result<
+        Option<std::sync::mpsc::Receiver<Result<R, std::sync::mpsc::RecvError>>>,
+        ActorError<T, R>,
+    > {
+        let (tx, rx) = std::sync::mpsc::channel();
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FindActor(address.clone(), tx));
-        if let Ok(Some((tx, ready))) = rx.await {
+        if let Ok(Some((tx, ready))) = rx.recv() {
             if ready {
                 let tx = tx.clone();
                 if subscript {
                     let (sub_tx, sub_rx) = std::sync::mpsc::channel();
-                    std::thread::spawn(move || async move {
+                    std::thread::spawn(move || {
                         let mut i = 0;
                         if let Some(interval) = job.interval() {
                             loop {
                                 i += 1;
                                 if job.start_at() <= std::time::SystemTime::now() {
-                                    let (result_tx, result_rx) = oneshot::channel::<R>();
+                                    let (result_tx, result_rx) = std::sync::mpsc::channel::<R>();
                                     let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
-                                    let _ = sub_tx.send(result_rx.await);
+                                    let _ = sub_tx.send(result_rx.recv());
                                     std::thread::sleep(interval);
                                     if let Some(max_iter) = job.max_iter() {
                                         if i >= max_iter {
@@ -304,15 +311,15 @@ where
                             }
                         } else {
                             if job.start_at() <= std::time::SystemTime::now() {
-                                let (result_tx, result_rx) = oneshot::channel::<R>();
+                                let (result_tx, result_rx) = std::sync::mpsc::channel::<R>();
                                 let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
-                                let _ = sub_tx.send(result_rx.await);
+                                let _ = sub_tx.send(result_rx.recv());
                             }
                         }
                     });
                     Ok(Some(sub_rx))
                 } else {
-                    std::thread::spawn(move || async move {
+                    std::thread::spawn(move || {
                         let mut i = 0;
                         if let Some(interval) = job.interval() {
                             loop {

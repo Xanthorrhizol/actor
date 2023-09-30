@@ -29,9 +29,9 @@ where
     R: Sized + Send,
 {
     #[error(transparent)]
-    OneshotRecv(#[from] oneshot::RecvError),
+    ChannelSend(#[from] std::sync::mpsc::SendError<Message<T, R>>),
     #[error(transparent)]
-    UnboundedChannelSend(#[from] std::sync::mpsc::SendError<Message<T, R>>),
+    ChannelRecv(#[from] std::sync::mpsc::RecvError),
     #[error(transparent)]
     TryRecvError(#[from] std::sync::mpsc::TryRecvError),
 
