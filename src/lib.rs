@@ -7,8 +7,8 @@ pub mod types;
 
 pub use crate::error::ActorError;
 pub use crate::types::{JobSpec, Message};
-#[cfg(feature = "std")]
-pub use std_actor::*;
+#[cfg(feature = "sync")]
+pub use sync_actor::*;
 #[cfg(feature = "tokio")]
 pub use tokio_actor::*;
 
