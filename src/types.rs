@@ -24,14 +24,14 @@ where
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "sync")]
 #[derive(Debug)]
 pub struct Message<T, R> {
     inner: T,
     result_tx: Option<std::sync::mpsc::Sender<R>>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "sync")]
 impl<T, R> Message<T, R>
 where
     T: Sized + Send + Clone,

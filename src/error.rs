@@ -21,7 +21,7 @@ where
     CloneFailed(String),
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "sync")]
 #[derive(Error, Debug)]
 pub enum ActorError<T, R>
 where
