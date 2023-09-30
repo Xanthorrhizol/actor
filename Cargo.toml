@@ -8,10 +8,10 @@ authors = [ "Xanthorrhizol <xanthorrhizol@proton.me>" ]
 
 [features]
 sync = []
-tokio = ["dep:tokio"]
+tokio = ["dep:tokio", "dep:async-trait"]
 
 [dependencies]
-async-trait = "0.1.68"
+async-trait = { version = "0.1.68", optional = true }
 log = "0.4.17"
 thiserror = "1.0.40"
 tokio = { version = "1.28.1", features = ["full"], optional = true }
