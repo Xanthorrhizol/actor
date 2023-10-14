@@ -105,6 +105,16 @@ let result = actor_system.send_and_recv(
   "some-address".to_string(), /* address */
   MyMessage::B("b".to_string()), /* message */
 );
+
+// restart actor
+actor_system.restart(
+  "some-address".to_string(), /* address */
+);
+
+// kill and unregister actor
+actor_system.unregister(
+  "some-address".to_string(), /* address */
+);
 ```
 
 ### Job
@@ -238,6 +248,16 @@ let result = actor_system.send_and_recv(
   "some-address".to_string(), /* address */
   MyMessage::B("b".to_string()), /* message */
 ).await;
+
+// restart actor
+actor_system.restart(
+  "some-address".to_string(), /* address */
+);
+
+// kill and unregister actor
+actor_system.unregister(
+  "some-address".to_string(), /* address */
+);
 ```
 
 ### Job
