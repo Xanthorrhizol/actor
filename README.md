@@ -5,7 +5,7 @@
 1. add actor in Cargo.toml
 
 ```toml
-xan-actor = { version = "1.2.0", feature = ["sync"] }
+xan-actor = { version = "1.2.2", feature = ["sync"] }
 ```
 or add xan-actor with command below & edit the line for this into upper
 ```bash
