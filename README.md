@@ -5,7 +5,7 @@
 1. add actor in Cargo.toml
 
 ```toml
-xan-actor = { version = "1.1.3", feature = ["sync"] }
+xan-actor = { version = "1.2.0", feature = ["sync"] }
 ```
 or add xan-actor with command below & edit the line for this into upper
 ```bash
@@ -139,7 +139,7 @@ if let Some(recv_rx) = actor_system.run_job(
 1. add actor in Cargo.toml
 
 ```toml
-xan-actor = { version = "1.1.3", feature = ["tokio"] }
+xan-actor = { version = "1.2.0", feature = ["tokio"] }
 ```
 or add xan-actor with command below & edit the line for this into upper
 ```bash

@@ -13,9 +13,11 @@ where
         String,
         std::sync::mpsc::Sender<Message<T, R>>,
         std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Sender<()>,
         LifeCycle,
         std::sync::mpsc::Sender<()>,
     ),
+    Restart(String),
     Unregister(String),
     FindActor(
         String,
@@ -60,11 +62,13 @@ where
             }
             let (tx, rx) = std::sync::mpsc::channel::<Message<T, R>>();
             let (kill_tx, kill_rx) = std::sync::mpsc::channel::<()>();
+            let (restart_tx, restart_rx) = std::sync::mpsc::channel::<()>();
             let (result_tx, result_rx) = std::sync::mpsc::channel::<()>();
 
             let _ = actor_system_tx.send(ActorSystemCmd::Register(
                 self.address().to_string(),
                 tx,
+                restart_tx,
                 kill_tx,
                 if restarted {
                     LifeCycle::Restarting
@@ -81,10 +85,16 @@ where
                 LifeCycle::Receiving,
             ));
             let _ = ready_tx.send(());
-            if let None = loop {
+            if let Some(_) = loop {
                 let result = rx.try_recv();
                 let kill = kill_rx.try_recv();
+                let restart = restart_rx.try_recv();
                 if let Ok(()) = kill {
+                    info!("Kill actor: address={}", self.address());
+                    break Some(());
+                }
+                if let Ok(()) = restart {
+                    info!("Restart actor: address={}", self.address());
                     break None;
                 }
                 if let Ok(msg) = result {
@@ -97,7 +107,7 @@ where
                         Err(e) => {
                             if kill_in_error {
                                 error!("Handler's result has error: {:?}", e);
-                                break Some(e);
+                                break Some(());
                             }
                             debug!("Handler's result has error: {:?}", e);
                         }
@@ -168,26 +178,40 @@ where
                 (
                     std::sync::mpsc::Sender<Message<T, R>>,
                     std::sync::mpsc::Sender<()>,
+                    std::sync::mpsc::Sender<()>,
                     LifeCycle,
                 ),
             >::new();
             while let Ok(msg) = handler_rx.recv() {
                 match msg {
-                    ActorSystemCmd::Register(address, tx, kill_tx, life_cycle, result_tx) => {
+                    ActorSystemCmd::Register(
+                        address,
+                        tx,
+                        restart_tx,
+                        kill_tx,
+                        life_cycle,
+                        result_tx,
+                    ) => {
                         debug!("Register actor with address {}", address);
-                        map.insert(address.clone(), (tx, kill_tx, life_cycle));
+                        map.insert(address.clone(), (tx, restart_tx, kill_tx, life_cycle));
                         let _ = result_tx.send(());
+                    }
+                    ActorSystemCmd::Restart(address) => {
+                        debug!("Restart actor with address {}", address);
+                        if let Some((_tx, restart_tx, _kill_tx, _life_cycle)) = map.get(&address) {
+                            let _ = restart_tx.send(());
+                        }
                     }
                     ActorSystemCmd::Unregister(address) => {
                         debug!("Unregister actor with address {}", address);
-                        if let Some((_tx, kill_tx, _life_cycle)) = map.get(&address) {
+                        if let Some((_tx, _restart_tx, kill_tx, _life_cycle)) = map.get(&address) {
                             let _ = kill_tx.send(());
                             map.remove(&address);
                         }
                     }
                     ActorSystemCmd::FindActor(address, result_tx) => {
                         debug!("FindActor with address {}", address);
-                        if let Some((tx, _kill_tx, life_cycle)) = map.get(&address) {
+                        if let Some((tx, _restart_tx, _kill_tx, life_cycle)) = map.get(&address) {
                             let _ = result_tx.send(Some((
                                 tx.clone(),
                                 match life_cycle {
@@ -205,7 +229,7 @@ where
                             address, life_cycle
                         );
                         if let Some(actor) = map.get_mut(&address) {
-                            actor.2 = life_cycle;
+                            actor.3 = life_cycle;
                         };
                     }
                 };
@@ -217,12 +241,13 @@ where
         &mut self,
         address: String,
         tx: std::sync::mpsc::Sender<Message<T, R>>,
+        restart_tx: std::sync::mpsc::Sender<()>,
         kill_tx: std::sync::mpsc::Sender<()>,
         life_cycle: LifeCycle,
     ) {
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         let _ = self.handler_tx.send(ActorSystemCmd::Register(
-            address, tx, kill_tx, life_cycle, result_tx,
+            address, tx, restart_tx, kill_tx, life_cycle, result_tx,
         ));
         let _ = result_rx.recv();
     }
@@ -232,6 +257,10 @@ where
             address.to_string(),
             life_cycle,
         ));
+    }
+
+    pub fn restart(&mut self, address: String) {
+        let _ = self.handler_tx.send(ActorSystemCmd::Restart(address));
     }
 
     pub fn unregister(&mut self, address: String) {
