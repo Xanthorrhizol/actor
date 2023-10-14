@@ -58,7 +58,7 @@ where
     ) -> Result<(), ActorError<T, R>> {
         let mut restarted = false;
         loop {
-01:8001 redis/redis-stack:latest            if restarted {
+            if restarted {
                 self.post_restart().await;
             }
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message<T, R>>();
