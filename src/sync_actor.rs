@@ -110,6 +110,7 @@ where
                                 break Some(());
                             }
                             debug!("Handler's result has error: {:?}", e);
+                            break None;
                         }
                     }
                 }

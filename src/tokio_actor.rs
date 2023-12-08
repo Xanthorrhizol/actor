@@ -100,7 +100,8 @@ where
                                     error!("Handler's result has error: {:?}", e);
                                     break Some(());
                                 }
-                               debug!("Handler's result has error: {:?}", e);
+                                debug!("Handler's result has error: {:?}", e);
+                                break None;
                            }
                        }
                     }
