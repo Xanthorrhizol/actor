@@ -1,11 +1,9 @@
-#[cfg(feature = "tokio")]
 #[derive(Debug)]
 pub struct Message<T, R> {
     inner: T,
     result_tx: Option<tokio::sync::oneshot::Sender<R>>,
 }
 
-#[cfg(feature = "tokio")]
 impl<T, R> Message<T, R>
 where
     T: Sized + Send + Clone,
@@ -20,32 +18,6 @@ where
     }
 
     pub fn result_tx(self) -> Option<tokio::sync::oneshot::Sender<R>> {
-        self.result_tx
-    }
-}
-
-#[cfg(feature = "sync")]
-#[derive(Debug)]
-pub struct Message<T, R> {
-    inner: T,
-    result_tx: Option<std::sync::mpsc::Sender<R>>,
-}
-
-#[cfg(feature = "sync")]
-impl<T, R> Message<T, R>
-where
-    T: Sized + Send + Clone,
-    R: Sized + Send,
-{
-    pub fn new(inner: T, result_tx: Option<std::sync::mpsc::Sender<R>>) -> Self {
-        Self { inner, result_tx }
-    }
-
-    pub fn inner(&self) -> T {
-        self.inner.clone()
-    }
-
-    pub fn result_tx(self) -> Option<std::sync::mpsc::Sender<R>> {
         self.result_tx
     }
 }

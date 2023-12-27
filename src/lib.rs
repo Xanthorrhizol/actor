@@ -1,15 +1,11 @@
 mod error;
-#[cfg(feature = "sync")]
-pub mod sync_actor;
-#[cfg(feature = "tokio")]
+#[cfg(test)]
+mod test;
 pub mod tokio_actor;
 pub mod types;
 
 pub use crate::error::ActorError;
 pub use crate::types::{JobSpec, Message};
-#[cfg(feature = "sync")]
-pub use sync_actor::*;
-#[cfg(feature = "tokio")]
 pub use tokio_actor::*;
 
 #[macro_use]

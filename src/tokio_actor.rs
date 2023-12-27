@@ -146,8 +146,8 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct ActorSystem<T: Clone + Send + Sync + 'static, R: Send + 'static> {
-    _handler: Option<tokio::task::JoinHandle<()>>,
     handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>>,
 }
 
@@ -158,10 +158,7 @@ where
 {
     pub fn new() -> Self {
         let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut me = Self {
-            _handler: None,
-            handler_tx,
-        };
+        let mut me = Self { handler_tx };
         me.run(handler_rx);
         me
     }
@@ -170,8 +167,11 @@ where
         self.handler_tx.clone()
     }
 
-    fn run(&mut self, mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd<T, R>>) {
-        self._handler = Some(tokio::spawn(async move {
+    fn run(
+        &mut self,
+        mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd<T, R>>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
             let mut map = HashMap::<
                 String,
                 (
@@ -234,7 +234,7 @@ where
                     }
                 };
             }
-        }));
+        })
     }
 
     pub async fn register(

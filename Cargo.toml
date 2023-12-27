@@ -1,6 +1,6 @@
 [package]
 name = "xan-actor"
-version = "1.2.5"
+version = "1.2.6"
 edition = "2021"
 authors = [ "Xanthorrhizol <xanthorrhizol@proton.me>" ]
 description = "Akka actor"
@@ -11,12 +11,8 @@ keywords = ["akka", "actor"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-sync = []
-tokio = ["dep:tokio", "dep:async-trait"]
-
 [dependencies]
-async-trait = { version = "0.1.68", optional = true }
+async-trait = { version = "0.1.68" }
 log = "0.4.17"
 thiserror = "1.0.40"
-tokio = { version = "1.28.1", features = ["full"], optional = true }
+tokio = { version = "1.28.1", features = ["full"] }
