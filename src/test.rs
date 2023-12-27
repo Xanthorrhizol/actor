@@ -65,10 +65,12 @@ async fn test() {
     actor.register(&mut actor_system, false).await;
     let actor2 = MyActor::new("some-address2".to_string()).await.unwrap();
 
-    let _ = actor_system.send(
-        "some-address".to_string(),    /* address */
-        MyMessage::A("a".to_string()), /* message */
-    );
+    let _ = actor_system
+        .send(
+            "some-address".to_string(),    /* address */
+            MyMessage::A("a".to_string()), /* message */
+        )
+        .await;
     let result = actor_system
         .send_and_recv(
             "some-address".to_string(),    /* address */

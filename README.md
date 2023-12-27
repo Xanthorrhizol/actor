@@ -95,7 +95,7 @@ actor.register(&mut actor_system).await;
 let _ = actor_system.send(
   "some-address".to_string(), /* address */
   MyMessage::A("a".to_string()), /* message */
-);
+).await;
 let result = actor_system.send_and_recv(
   "some-address".to_string(), /* address */
   MyMessage::B("b".to_string()), /* message */
