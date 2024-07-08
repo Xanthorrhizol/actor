@@ -19,7 +19,7 @@ let mut actor_system = ActorSystem::new();
 3. declare Actor to register
 
 ```rust
-use crate::xan_actor::{Actor, Handler, Message, error::ActorError};
+use crate::xan_actor::{Actor, Handler, Message, ActorError};
 
 #[derive(Clone, Debug)]
 pub enum MyMessage {
