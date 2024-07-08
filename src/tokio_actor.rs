@@ -31,7 +31,7 @@ where
 #[async_trait::async_trait]
 pub trait Actor<T, R, E, P>
 where
-    Self: Sized + Send + Sync + 'static,
+    Self: Sized + 'static,
     T: Sized + Send + Clone + Sync + 'static,
     R: Sized + Send + 'static,
     E: Error + Send + 'static,
