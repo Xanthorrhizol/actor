@@ -6,7 +6,7 @@ use std::error::Error;
 
 pub enum ActorSystemCmd<T, R>
 where
-    T: Sized + Send + Clone + Sync + 'static,
+    T: Sized + Send + Clone + 'static,
     R: Sized + Send + 'static,
 {
     Register(
@@ -32,7 +32,7 @@ where
 pub trait Actor<T, R, E, P>
 where
     Self: Sized + 'static,
-    T: Sized + Send + Clone + Sync + 'static,
+    T: Sized + Send + Clone + 'static,
     R: Sized + Send + 'static,
     E: Error + Send + 'static,
 {
@@ -147,13 +147,13 @@ where
 }
 
 #[derive(Clone)]
-pub struct ActorSystem<T: Clone + Send + Sync + 'static, R: Send + 'static> {
+pub struct ActorSystem<T: Clone + Send + 'static, R: Send + 'static> {
     handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>>,
 }
 
 impl<T, R> ActorSystem<T, R>
 where
-    T: Sized + Send + Clone + Sync + 'static,
+    T: Sized + Send + Clone + 'static,
     R: Sized + Send + 'static,
 {
     pub fn new() -> Self {
