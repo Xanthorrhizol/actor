@@ -20,17 +20,13 @@ where
 }
 
 struct MyActor {
-    address: String,
+    pub address: String,
 }
 
 #[async_trait::async_trait]
-impl Actor<MyMessage, (), MyError<MyMessage, ()>, String> for MyActor {
+impl Actor<MyMessage, (), MyError<MyMessage, ()>> for MyActor {
     fn address(&self) -> &str {
         &self.address
-    }
-
-    async fn new(params: String) -> Result<Self, MyError<MyMessage, ()>> {
-        Ok(Self { address: params })
     }
 
     async fn actor(&mut self, msg: MyMessage) -> Result<(), MyError<MyMessage, ()>> {
@@ -58,9 +54,13 @@ impl Actor<MyMessage, (), MyError<MyMessage, ()>, String> for MyActor {
 #[tokio::test]
 async fn test() {
     let mut actor_system = ActorSystem::new();
-    let actor = MyActor::new("some-address".to_string()).await.unwrap();
+    let actor = MyActor {
+        address: "some-address".to_string(),
+    };
     actor.register(&mut actor_system, false).await;
-    let actor2 = MyActor::new("some-address2".to_string()).await.unwrap();
+    let actor2 = MyActor {
+        address: "some-address2".to_string(),
+    };
 
     let _ = actor_system
         .send(
@@ -68,12 +68,13 @@ async fn test() {
             MyMessage::A("a".to_string()), /* message */
         )
         .await;
-    let result = actor_system
+    actor_system
         .send_and_recv(
             "some-address".to_string(),    /* address */
             MyMessage::B("b".to_string()), /* message */
         )
-        .await;
+        .await
+        .unwrap();
 
     // restart actor
     actor_system.restart("some-address".to_string() /* address */);
@@ -82,21 +83,23 @@ async fn test() {
     let actor_system_move = actor_system.clone();
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-        let result = actor_system_move
+        actor_system_move
             .send_and_recv(
                 "some-address2".to_string(),   /* address */
                 MyMessage::A("a".to_string()), /* message */
             )
-            .await;
+            .await
+            .unwrap();
     });
     actor2.register(&mut actor_system, false).await;
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-    let result = actor_system
+    actor_system
         .send_and_recv(
             "some-address2".to_string(),   /* address */
             MyMessage::A("a".to_string()), /* message */
         )
-        .await;
+        .await
+        .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // kill and unregister actor

@@ -41,7 +41,7 @@ where
 }
 
 struct MyActor {
-  address: String,
+  pub address: String,
 }
 
 #[async_trait::async_trait]
@@ -49,10 +49,6 @@ impl Actor<MyMessage, (), MyError<MyMessage, ()>, String> for MyActor
 {
   fn address(&self) -> &str {
     &self.address
-  }
-
-  async fn new(params: String) -> Result<Self, MyError<MyMessage, ()>> {
-    Ok(Self { address: params })
   }
 
   async fn actor(
@@ -83,7 +79,9 @@ impl Actor<MyMessage, (), MyError<MyMessage, ()>, String> for MyActor
 4. register actor into actor system
 
 ```rust
-let actor = MyActor::new("some-address".to_string()).await.unwrap();
+let actor = MyActor {
+    address: "some-address".to_string(),
+};
 actor.register(&mut actor_system).await;
 ```
 

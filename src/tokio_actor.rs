@@ -29,7 +29,7 @@ where
 }
 
 #[async_trait::async_trait]
-pub trait Actor<T, R, E, P>
+pub trait Actor<T, R, E>
 where
     Self: Sized + 'static,
     T: Sized + Send + Clone + 'static,
@@ -37,8 +37,6 @@ where
     E: Error + Send + 'static,
 {
     fn address(&self) -> &str;
-
-    async fn new(params: P) -> Result<Self, E>;
 
     async fn actor(&mut self, msg: T) -> Result<R, E>;
 
@@ -151,16 +149,26 @@ pub struct ActorSystem<T: Clone + Send + 'static, R: Send + 'static> {
     handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>>,
 }
 
+impl<T, R> Default for ActorSystem<T, R>
+where
+    T: Clone + Send + 'static,
+    R: Send + 'static,
+{
+    fn default() -> Self {
+        let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut me = Self { handler_tx };
+        me.run(handler_rx);
+        me
+    }
+}
+
 impl<T, R> ActorSystem<T, R>
 where
     T: Sized + Send + Clone + 'static,
     R: Sized + Send + 'static,
 {
     pub fn new() -> Self {
-        let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut me = Self { handler_tx };
-        me.run(handler_rx);
-        me
+        Self::default()
     }
 
     pub fn handler_tx(&self) -> tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>> {
