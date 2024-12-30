@@ -45,7 +45,8 @@ actor!(
 4. create ActorSystem & declared actor
 
 ```rust
-fn main() {
+#[tokio::main]
+async fn main() {
     let (whois_response_rx, mut actor_system) = ActorSystem::new();
     let actor = TestActor::new(
         "test-actor".to_string(),
@@ -60,7 +61,8 @@ fn main() {
 5. run actor
 
 ```rust
-fn main() {
+#[tokio::main]
+async fn main() {
    ...
     let (_handle, ready_rx) = actor.run(whois_response_rx);
     ready_rx.await.unwrap();
@@ -70,7 +72,8 @@ fn main() {
 6. send and receive messages
 
 ```rust
-fn main() {
+#[tokio::main]
+async fn main() {
     ...
     let response_rx = send_msg!(
         &mut actor_system,

@@ -59,7 +59,7 @@ pub fn actor_system(_input: proc_macro::TokenStream) -> proc_macro::TokenStream 
                 let WhoisResponse(_, _, restart_tx, _) = self.whois(address).await;
                 let _ = restart_tx.send(());
             }
-            async fn whois(&mut self, address: String) -> WhoisResponse {
+            pub async fn whois(&mut self, address: String) -> WhoisResponse {
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
                 let _ = self.whois_channel_tx.send((address, tx));
                 rx.recv().await.expect("Failed to receive whois response")
