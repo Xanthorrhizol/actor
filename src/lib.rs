@@ -17,7 +17,7 @@ pub fn actor_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// Genereate actor struct and inner methods
 /// # Arguments
 /// * `actor_struct_name` - Name of the actor struct
-/// * `message_struct` - Message struct that the actor will receive
+/// * `message_type` - Message struct that the actor will receive
 /// * `resource_struct` - Resource struct that the actor will use
 /// * `handle_message` - Method that will handle the message
 /// * `pre_start` - Method that will be called before the actor starts

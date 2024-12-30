@@ -2,7 +2,7 @@ pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let parsed_args = syn::parse_macro_input!(input as ParsedArguments);
 
     let actor_struct_name = parsed_args.actor_struct_name;
-    let message_struct = parsed_args.message_struct;
+    let message_type = parsed_args.message_type;
     let resource_struct = parsed_args.resource_struct;
     let handle_fn = parsed_args.handle_fn;
     let pre_start_fn = parsed_args.pre_start_fn;
@@ -11,14 +11,18 @@ pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let post_restart_fn = parsed_args.post_restart_fn;
     let kill_in_error = parsed_args.kill_in_error;
     let resource_struct_name = resource_struct.clone().ident;
-    let message_struct_name = message_struct.clone().ident;
+    let message_type_name = match message_type.clone() {
+        syn::Item::Struct(s) => s.ident,
+        syn::Item::Enum(e) => e.ident,
+        _ => panic!("Message must be a struct or enum"),
+    };
     let handle_fn_name = handle_fn.clone().sig.ident;
 
     let tokens = quote! {
         #resource_struct
 
         #[derive(serde::Deserialize)]
-        #message_struct
+        #message_type
 
         pub struct #actor_struct_name {
             actor_ref: String,
@@ -113,7 +117,7 @@ pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 message = self.message_rx.recv() => {
                                     if let Some((message, response_tx)) = message {
                                         let response = self.#handle_fn_name(
-                                            bincode::deserialize::<#message_struct_name>(&message).expect("Failed to deserialize message"),
+                                            bincode::deserialize::<#message_type_name>(&message).expect("Failed to deserialize message"),
                                         );
                                         #[allow(unused_must_use)]
                                         response_tx.send(bincode::serialize(&response).expect("Failed to serialize response"));
@@ -153,7 +157,7 @@ pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 struct ParsedArguments {
     actor_struct_name: syn::Ident,
-    message_struct: syn::ItemStruct,
+    message_type: syn::Item,
     resource_struct: syn::ItemStruct,
     handle_fn: syn::ItemFn,
     pre_start_fn: syn::ItemFn,
@@ -167,7 +171,7 @@ impl syn::parse::Parse for ParsedArguments {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let actor_struct_name: syn::Ident = input.parse()?;
         input.parse::<syn::Token![,]>()?;
-        let message_struct: syn::ItemStruct = input.parse()?;
+        let message_type: syn::Item = input.parse()?;
         input.parse::<syn::Token![,]>()?;
         let resource_struct: syn::ItemStruct = input.parse()?;
         input.parse::<syn::Token![,]>()?;
@@ -185,7 +189,7 @@ impl syn::parse::Parse for ParsedArguments {
 
         Ok(ParsedArguments {
             actor_struct_name,
-            message_struct,
+            message_type,
             resource_struct,
             handle_fn,
             pre_start_fn,
