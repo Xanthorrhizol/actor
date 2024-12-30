@@ -1,141 +1,84 @@
 ## Actor
 
+### Caution
+
+This version has breaking changes from the previous version. The previous version is not compatible with this version.
+
 ### Usage
 
-1. add actor in Cargo.toml
+1. add dependencies
 
 ```bash
-$ cargo add xan-actor
+$ cargo add xan-actor bincode log
+$ cargo add serde --features=serde_derive
+$ cargo add tokio --features="rt-multi-thread macros sync"
 ```
-2. create a actor as mutable
+
+2. declare an actor_system in your lib.rs or main.rs
 
 ```rust
-use xan_actor::ActorSystem;
-...
-
-let mut actor_system = ActorSystem::new();
+xan_actor::actor_system!();
 ```
 
 3. declare Actor to register
 
 ```rust
-use crate::xan_actor::{Actor, Handler, Message, ActorError};
-
-#[derive(Clone, Debug)]
-pub enum MyMessage {
-  A(String),
-  B(String),
-  Exit,
-}
-
-#[derive(thiserror::Error, Debug)]
-enum MyError<T, R>
-where
-  T: Sized + Send + Clone,
-  R: Sized + Send,
-{
-  #[error("bye")]
-  Exit,
-  #[error(transparent)]
-  ActorError(#[from] ActorError<T, R>),
-}
-
-struct MyActor {
-  pub address: String,
-}
-
-#[async_trait::async_trait]
-impl Actor<MyMessage, (), MyError<MyMessage, ()>, String> for MyActor
-{
-  fn address(&self) -> &str {
-    &self.address
-  }
-
-  async fn actor(
-    &mut self, msg: MyMessage,
-  ) -> Result<(), MyError<MyMessage, ()>> {
-    match msg {
-      MyMessage::A(s) => {
-        println!("got A: {}", s);
-      }
-      MyMessage::B(s) => {
-        println!("got B: {}", s);
-      }
-      MyMessage::Exit => {
-        println!("got Exit");
-        return Err(MyError::Exit);
-      }
-    }
-    Ok(())
-  }
-
-  async fn pre_start(&mut self) {}
-  async fn pre_restart(&mut self) {}
-  async fn post_stop(&mut self) {}
-  async fn post_restart(&mut self) {}
-}
-```
-
-4. register actor into actor system
-
-```rust
-let actor = MyActor {
-    address: "some-address".to_string(),
-};
-actor.register(&mut actor_system).await;
-```
-
-5. use it
-
-```rust
-let _ = actor_system.send(
-  "some-address".to_string(), /* address */
-  MyMessage::A("a".to_string()), /* message */
-).await;
-let result = actor_system.send_and_recv(
-  "some-address".to_string(), /* address */
-  MyMessage::B("b".to_string()), /* message */
-).await;
-
-// restart actor
-actor_system.restart(
-  "some-address".to_string(), /* address */
-);
-// it needs some time. TODO: handle it inside of restart function
-tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-
-let result = actor_system.send_and_recv(
-  "some-address".to_string(), /* address */
-  MyMessage::A("a".to_string()), /* message */
-).await;
-
-// kill and unregister actor
-actor_system.unregister(
-  "some-address".to_string(), /* address */
+actor!(
+    TestActor,
+    struct Message {
+        pub message: String,
+    },
+    struct TestActorResource {
+        pub data: String,
+    },
+    fn handle_message(&self, message: Message) -> String {
+        message.message
+    },
+    fn pre_start(&mut self) {},
+    fn post_stop(&mut self) {},
+    fn pre_restart(&mut self) {},
+    fn post_restart(&mut self) {},
+    true
 );
 ```
 
-### Job
-
-- If you send message at some time or with some iteration, you can use job
+4. create ActorSystem & declared actor
 
 ```rust
-use xan_actor::JobSpec;
-...
+fn main() {
+    let (whois_response_rx, mut actor_system) = ActorSystem::new();
+    let actor = TestActor::new(
+        "test-actor".to_string(),
+        TestActorResource {
+            data: "test".to_string(),
+        },
+    );
+    ...
+}
+```
 
-let job = JobSpec::new(
-  Some(2), /* max_iter */
-  Some(std::time::Duration::from_secs(3)), /* interval */
-  std::time::SystemTime::now(), /* start_at */
-);
-if let Some(recv_rx) = actor_system.run_job(
-  "some-address".to_string(), /* address */
-  true, /* whether subscribe the handler result or not(true => Some(rx)) */
-  job, /* job as JobSpec */
-  MyMessage::C("c".to_string()), /* message */
-) {
-    while let Some(result) = recv_rx.recv().await {
-        println!("result returned");
-    }
+5. run actor
+
+```rust
+fn main() {
+   ...
+    let (_handle, ready_rx) = actor.run(whois_response_rx);
+    ready_rx.await.unwrap();
+    ...
+}
+
+6. send and receive messages
+
+```rust
+fn main() {
+    ...
+    let response_rx = send_msg!(
+        &mut actor_system,
+        "test-actor".to_string(), // address
+        &"test".to_string() // message
+    );
+    let response = recv_res!(String /* return type */, response_rx);
+    println!("{}", response);
+    ...
 }
 ```
