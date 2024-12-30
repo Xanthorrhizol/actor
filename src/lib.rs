@@ -7,7 +7,7 @@ mod actor_system;
 mod messenger;
 
 #[proc_macro]
-/// Generate actor system struct and inner methods
+/// Generate actor system struct and inner methods.  
 /// It contains LifeCycle, WhoisResponse struct too
 pub fn actor_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     actor_system::actor_system(input)
@@ -27,6 +27,7 @@ pub fn actor_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// * `kill_in_error` - kill the actor if an error occurs - TODO: not supported yet
 ///
 /// # Example
+/// ```rust
 /// use xan_actor::{actor, actor_system, recv_res, send_msg};
 ///
 /// actor_system!(); // It always needs to be called once in lib.rs or main.rs
@@ -48,6 +49,7 @@ pub fn actor_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 ///     fn post_restart(&mut self) {},
 ///     true
 /// );
+/// ```
 pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     actor::actor(input)
 }
@@ -60,12 +62,14 @@ pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// * `message` - Message to send
 ///
 /// # Example
+/// ```rust
 /// use xan_actor::send_msg;
 /// send_msg!(
 ///     &mut actor_system,
 ///     "test-actor".to_string(),
 ///     &"test".to_string()
 /// );
+/// ```
 pub fn send_msg(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     messenger::send_msg(input)
 }
@@ -77,6 +81,7 @@ pub fn send_msg(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// * `response_rx` - Response receiver
 ///
 /// # Example
+/// ```rust
 /// use xan_actor::{recv_res, send_msg};
 /// let response_rx = send_msg!(
 ///     &mut actor_system,
@@ -87,6 +92,7 @@ pub fn send_msg(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 ///    String,
 ///    response_rx
 /// );
+/// ```
 pub fn recv_res(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     messenger::recv_res(input)
 }
