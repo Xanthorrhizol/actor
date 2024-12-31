@@ -14,21 +14,24 @@ $ cargo add serde --features=serde_derive
 $ cargo add tokio --features="rt-multi-thread macros sync"
 ```
 
-2. declare an actor_system in your lib.rs or main.rs
+2. declare an actor_system in your lib.rs or main.rs with declare the message types that will be sent to the actors.
 
 ```rust
-xan_actor::actor_system!();
+xan_actor::actor_system!(
+    struct Message {
+        pub message: String,
+    },
+    ...
+);
 ```
 
 3. declare Actor to register
 
 ```rust
-actor!(
-    TestActor,
-    struct Message {
-        pub message: String,
-    },
-    struct TestActorResource {
+xan_actor::actor!(
+    Actor, // actor name
+    Message, // message type
+    struct ActorResource {
         pub data: String,
     },
     fn handle_message(&self, message: Message) -> String {
@@ -47,12 +50,13 @@ actor!(
 ```rust
 #[tokio::main]
 async fn main() {
-    let (whois_response_rx, mut actor_system) = ActorSystem::new();
-    let actor = TestActor::new(
-        "test-actor".to_string(),
-        TestActorResource {
+    let (mut actor_system, register_tx) = ActorSystem::new();
+    let actor = Actor::new(
+        address!("test".to_string(), "actor".to_string(), "*".to_string()),
+        ActorResource {
             data: "test".to_string(),
         },
+        register_tx,
     );
     ...
 }
@@ -64,10 +68,11 @@ async fn main() {
 #[tokio::main]
 async fn main() {
    ...
-    let (_handle, ready_rx) = actor.run(whois_response_rx);
+    let (_handle, ready_rx) = actor.run();
     ready_rx.await.unwrap();
     ...
 }
+```
 
 6. send and receive messages
 
@@ -75,13 +80,15 @@ async fn main() {
 #[tokio::main]
 async fn main() {
     ...
-    let response_rx = send_msg!(
+    let response_rxs = send_msg!(
         &mut actor_system,
-        "test-actor".to_string(), // address
-        &"test".to_string() // message
+        address!("test".to_string(), "actor".to_string(), "*".to_string()), // actor address
+        &"test".to_string()                                                 // message
     );
-    let response = recv_res!(String /* return type */, response_rx);
-    println!("{}", response);
+
+    for response in recv_res!(String /* return type */, response_rxs) {
+        println!("{}", response);
+    }
     ...
 }
 ```

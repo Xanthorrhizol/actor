@@ -11,21 +11,13 @@ pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let post_restart_fn = parsed_args.post_restart_fn;
     let kill_in_error = parsed_args.kill_in_error;
     let resource_struct_name = resource_struct.clone().ident;
-    let message_type_name = match message_type.clone() {
-        syn::Item::Struct(s) => s.ident,
-        syn::Item::Enum(e) => e.ident,
-        _ => panic!("Message must be a struct or enum"),
-    };
     let handle_fn_name = handle_fn.clone().sig.ident;
 
     let tokens = quote! {
         #resource_struct
 
-        #[derive(serde::Deserialize)]
-        #message_type
-
         pub struct #actor_struct_name {
-            actor_ref: String,
+            actor_ref: crate::ActorAddress,
             kill_in_error: bool,
             resource_struct: #resource_struct_name,
             message_tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, tokio::sync::oneshot::Sender<Vec<u8>>)>,
@@ -34,16 +26,36 @@ pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             kill_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
             restart_tx: tokio::sync::mpsc::UnboundedSender<()>,
             restart_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
-            life_cycle: crate::LifeCycle,
+            register_tx: tokio::sync::broadcast::Sender<crate::RegisterForm>,
+            life_cycle: LifeCycle,
         }
         impl #actor_struct_name {
+            /// Create a new actor
+            /// # Arguments
+            /// * `actor_ref` - The address of the actor
+            /// * `resource_struct` - The resource struct that the actor will use
+            /// * `register_tx` - The sender to register the actor
+            ///
+            /// # Returns
+            /// * The actor
             pub fn new(
-                actor_ref: String,
+                actor_ref: crate::ActorAddress,
                 resource_struct: #resource_struct_name,
+                register_tx: tokio::sync::broadcast::Sender<crate::RegisterForm>,
             ) -> Self {
                 let (message_tx, message_rx) = tokio::sync::mpsc::unbounded_channel();
                 let (kill_tx, kill_rx) = tokio::sync::mpsc::unbounded_channel();
                 let (restart_tx, restart_rx) = tokio::sync::mpsc::unbounded_channel();
+                let life_cycle = LifeCycle::Created;
+                register_tx.send(
+                    crate::RegisterForm {
+                        address: actor_ref.clone(),
+                        message_tx: message_tx.clone(),
+                        kill_tx: kill_tx.clone(),
+                        restart_tx: restart_tx.clone(),
+                        life_cycle,
+                    },
+                ).expect("Failed to send whois response");
                 Self {
                     actor_ref,
                     kill_in_error: #kill_in_error,
@@ -54,91 +66,124 @@ pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     kill_rx,
                     restart_tx,
                     restart_rx,
-                    life_cycle: crate::LifeCycle::Created,
+                    register_tx,
+                    life_cycle,
                 }
             }
-            pub fn address(&self) -> &str {
-                &self.actor_ref
-            }
-            pub fn resource(&mut self) -> &mut #resource_struct_name {
-                &mut self.resource_struct
-            }
 
+            /// Run the actor
+            /// # Returns
+            /// * A handle to the actor task
+            /// * A receiver that will be signalled when the actor is ready
             pub fn run(
                 mut self,
-                mut whois_channel_rx: tokio::sync::broadcast::Receiver<
-                    (
-                        String,
-                        tokio::sync::mpsc::UnboundedSender<crate::WhoisResponse>,
-                    ),
-                >,
             ) -> (tokio::task::JoinHandle<()>, tokio::sync::oneshot::Receiver<()>) {
                 let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
                 let handle = tokio::spawn(async move {
                     let mut first = true;
-                    self.life_cycle = crate::LifeCycle::Starting;
+                    self.life_cycle = LifeCycle::Starting;
                     self.pre_start();
+                    self.life_cycle = LifeCycle::Receiving;
+                    self.register_tx.send(
+                        crate::RegisterForm {
+                            address: self.actor_ref.clone(),
+                            message_tx: self.message_tx.clone(),
+                            kill_tx: self.kill_tx.clone(),
+                            restart_tx: self.restart_tx.clone(),
+                            life_cycle: self.life_cycle,
+                        },
+                    ).expect("Failed to send whois response");
                     ready_tx.send(()).expect("Failed to send ready signal");
                     loop {
                         if first {
                             first = false;
                         } else {
                             self.post_restart();
+                            self.life_cycle = LifeCycle::Receiving;
                         }
-                        self.life_cycle = crate::LifeCycle::Receiving;
+                        self.register_tx.send(
+                            crate::RegisterForm {
+                                address: self.actor_ref.clone(),
+                                message_tx: self.message_tx.clone(),
+                                kill_tx: self.kill_tx.clone(),
+                                restart_tx: self.restart_tx.clone(),
+                                life_cycle: self.life_cycle,
+                            },
+                        ).expect("Failed to send register request");
                         let kill = loop {
                             tokio::select! {
-                                whois_request = whois_channel_rx.recv() => {
-                                    if let Ok((actor_ref, whois_result_tx)) = whois_request {
-                                        if self.address() == &actor_ref {
-                                            whois_result_tx.send(
-                                                crate::WhoisResponse(
-                                                    self.message_tx.clone(),
-                                                    self.kill_tx.clone(),
-                                                    self.restart_tx.clone(),
-                                                    self.life_cycle,
-                                                ),
-                                            ).expect("Failed to send whois response");
-                                        }
-                                    }
-                                }
                                 kill_signal = self.kill_rx.recv() => {
                                     if let Some(_) = kill_signal {
-                                        log::info!("Killing actor {}", self.actor_ref);
+                                        log::info!("Killing actor {:?}", self.actor_ref);
                                         break true;
                                     }
                                 }
                                 restart_signal = self.restart_rx.recv() => {
                                     if let Some(_) = restart_signal {
-                                        log::info!("Restarting actor {}", self.actor_ref);
+                                        log::info!("Restarting actor {:?}", self.actor_ref);
                                         break false;
                                     }
                                 }
                                 message = self.message_rx.recv() => {
                                     if let Some((message, response_tx)) = message {
                                         let response = self.#handle_fn_name(
-                                            bincode::deserialize::<#message_type_name>(&message).expect("Failed to deserialize message"),
+                                            bincode::deserialize::<#message_type>(&message).expect("Failed to deserialize message"),
                                         );
                                         #[allow(unused_must_use)]
                                         response_tx.send(bincode::serialize(&response).expect("Failed to serialize response"));
                                     } else {
-                                        log::error!("The sender for {} has been dropped", self.actor_ref);
+                                        log::error!("The sender for {:?} has been dropped", self.actor_ref);
                                         break true;
                                     }
                                 }
                             }
                         };
                         if kill {
-                            self.life_cycle = crate::LifeCycle::Stopping;
+                            self.life_cycle = LifeCycle::Stopping;
+                            self.register_tx.send(
+                                crate::RegisterForm {
+                                    address: self.actor_ref.clone(),
+                                    message_tx: self.message_tx.clone(),
+                                    kill_tx: self.kill_tx.clone(),
+                                    restart_tx: self.restart_tx.clone(),
+                                    life_cycle: self.life_cycle,
+                                },
+                            ).expect("Failed to send register request");
                             self.post_stop();
-                            self.life_cycle = crate::LifeCycle::Terminated;
+                            self.life_cycle = LifeCycle::Terminated;
+                            self.register_tx.send(
+                                crate::RegisterForm {
+                                    address: self.actor_ref.clone(),
+                                    message_tx: self.message_tx.clone(),
+                                    kill_tx: self.kill_tx.clone(),
+                                    restart_tx: self.restart_tx.clone(),
+                                    life_cycle: self.life_cycle,
+                                },
+                            ).expect("Failed to send register request");
                             break;
                         }
                         self.pre_restart();
-                        self.life_cycle = crate::LifeCycle::Restarting;
+                        self.life_cycle = LifeCycle::Restarting;
+                        self.register_tx.send(
+                            crate::RegisterForm {
+                                address: self.actor_ref.clone(),
+                                message_tx: self.message_tx.clone(),
+                                kill_tx: self.kill_tx.clone(),
+                                restart_tx: self.restart_tx.clone(),
+                                life_cycle: self.life_cycle,
+                            },
+                        ).expect("Failed to send register request");
                     }
                 });
                 (handle, ready_rx)
+            }
+
+            fn address(&self) -> &crate::ActorAddress {
+                &self.actor_ref
+            }
+
+            fn resource(&mut self) -> &mut #resource_struct_name {
+                &mut self.resource_struct
             }
 
             #handle_fn
@@ -157,7 +202,7 @@ pub fn actor(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 struct ParsedArguments {
     actor_struct_name: syn::Ident,
-    message_type: syn::Item,
+    message_type: syn::Ident,
     resource_struct: syn::ItemStruct,
     handle_fn: syn::ItemFn,
     pre_start_fn: syn::ItemFn,
@@ -171,7 +216,7 @@ impl syn::parse::Parse for ParsedArguments {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let actor_struct_name: syn::Ident = input.parse()?;
         input.parse::<syn::Token![,]>()?;
-        let message_type: syn::Item = input.parse()?;
+        let message_type: syn::Ident = input.parse()?;
         input.parse::<syn::Token![,]>()?;
         let resource_struct: syn::ItemStruct = input.parse()?;
         input.parse::<syn::Token![,]>()?;
