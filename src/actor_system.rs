@@ -3,7 +3,7 @@ pub fn actor_system(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut tokens = quote! {};
     types.iter().for_each(|ty| {
         tokens.extend(quote! {
-            #[derive(serde::Deserialize)]
+            #[derive(serde::Serialize, serde::Deserialize)]
             #ty
         })
     });

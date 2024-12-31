@@ -1,6 +1,6 @@
 [package]
 name = "xan-actor"
-version = "3.0.0"
+version = "3.0.1"
 edition = "2021"
 authors = [ "Xanthorrhizol <xanthorrhizol@proton.me>" ]
 description = "Akka actor"
