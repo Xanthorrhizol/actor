@@ -1,24 +1,54 @@
+use crate::ActorError;
+
 #[derive(Debug)]
-pub struct Message<T, R> {
-    inner: T,
-    result_tx: Option<tokio::sync::oneshot::Sender<R>>,
+pub struct Message {
+    inner: Vec<u8>,
+    result_tx: Option<tokio::sync::oneshot::Sender<Vec<u8>>>,
+}
+impl Clone for Message {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            result_tx: None,
+        }
+    }
 }
 
-impl<T, R> Message<T, R>
-where
-    T: Sized + Send + Clone,
-    R: Sized + Send,
-{
-    pub fn new(inner: T, result_tx: Option<tokio::sync::oneshot::Sender<R>>) -> Self {
+impl Message {
+    pub fn new(inner: Vec<u8>, result_tx: Option<tokio::sync::oneshot::Sender<Vec<u8>>>) -> Self {
         Self { inner, result_tx }
     }
 
-    pub fn inner(&self) -> T {
-        self.inner.clone()
+    pub fn from<T>(inner: T, result_tx: Option<tokio::sync::oneshot::Sender<Vec<u8>>>) -> Self
+    where
+        T: serde::Serialize,
+    {
+        let inner = bincode::serialize(&inner).unwrap();
+        Self { inner, result_tx }
     }
 
-    pub fn result_tx(self) -> Option<tokio::sync::oneshot::Sender<R>> {
-        self.result_tx
+    pub fn inner(&self) -> &Vec<u8> {
+        &self.inner
+    }
+
+    pub fn result_tx(&mut self) -> Option<tokio::sync::oneshot::Sender<Vec<u8>>> {
+        let tx = self.result_tx.take();
+        self.result_tx = None;
+        tx
+    }
+
+    pub fn serialize<T>(&self) -> Result<Vec<u8>, ActorError>
+    where
+        T: serde::Serialize,
+    {
+        Ok(bincode::serialize(&self.inner)?)
+    }
+
+    pub fn deserialize<R>(&self) -> Result<R, ActorError>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        Ok(bincode::deserialize::<R>(&self.inner)?)
     }
 }
 

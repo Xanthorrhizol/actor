@@ -1,17 +1,13 @@
+use crate::LifeCycle;
 use crate::error::ActorError;
 use crate::types::{JobSpec, Message};
-use crate::LifeCycle;
 use std::collections::HashMap;
 use std::error::Error;
 
-pub enum ActorSystemCmd<T, R>
-where
-    T: Sized + Send + Clone + 'static,
-    R: Sized + Send + 'static,
-{
+pub enum ActorSystemCmd {
     Register(
         String,
-        tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
+        tokio::sync::mpsc::UnboundedSender<Message>,
         tokio::sync::mpsc::UnboundedSender<()>,
         tokio::sync::mpsc::UnboundedSender<()>,
         LifeCycle,
@@ -22,7 +18,7 @@ where
     FindActor(
         String,
         tokio::sync::oneshot::Sender<
-            Option<(tokio::sync::mpsc::UnboundedSender<Message<T, R>>, bool)>, // tx, ready
+            Option<(tokio::sync::mpsc::UnboundedSender<Message>, bool)>, // tx, ready
         >,
     ),
     SetLifeCycle(String, LifeCycle),
@@ -32,34 +28,34 @@ where
 pub trait Actor<T, R, E>
 where
     Self: Sized + 'static,
-    T: Sized + Send + Clone + 'static,
-    R: Sized + Send + 'static,
-    E: Error + Send + 'static,
+    T: Sized + Send + serde::de::DeserializeOwned,
+    R: Sized + Send + serde::Serialize,
+    E: Error + Send,
 {
     fn address(&self) -> &str;
 
     async fn actor(&mut self, msg: T) -> Result<R, E>;
 
-    async fn pre_start(&mut self);
+    async fn pre_start(&mut self) {}
 
-    async fn pre_restart(&mut self);
+    async fn pre_restart(&mut self) {}
 
-    async fn post_stop(&mut self);
+    async fn post_stop(&mut self) {}
 
-    async fn post_restart(&mut self);
+    async fn post_restart(&mut self) {}
 
     async fn run_actor(
         &mut self,
-        actor_system_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>>,
+        actor_system_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd>,
         kill_in_error: bool,
         ready_tx: tokio::sync::mpsc::UnboundedSender<()>,
-    ) -> Result<(), ActorError<T, R>> {
+    ) -> Result<(), ActorError> {
         let mut restarted = false;
         loop {
             if restarted {
                 self.post_restart().await;
             }
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message<T, R>>();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
             let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
             let (restart_tx, mut restart_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
             let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -86,10 +82,13 @@ where
             let _ = ready_tx.send(());
             if let Some(_) = loop {
                 tokio::select! {
-                    Some(msg) = rx.recv() => {
-                        match self.actor(msg.inner()).await {
+                    Some(mut msg) = rx.recv() => {
+                        let result_tx = msg.result_tx();
+                        let msg_de = msg.deserialize::<T>()?;
+                        match self.actor(msg_de).await {
                            Ok(result) => {
-                                if let Some(result_tx) = msg.result_tx() {
+                                if let Some(result_tx) = result_tx {
+                                    let result = bincode::serialize(&result)?;
                                     let _ = result_tx.send(result);
                                 }
                             }
@@ -135,7 +134,7 @@ where
             ));
         }
     }
-    async fn register(mut self, actor_system: &mut ActorSystem<T, R>, kill_in_error: bool) {
+    async fn register(mut self, actor_system: &mut ActorSystem, kill_in_error: bool) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let actor_system_tx = actor_system.handler_tx();
         let _ =
@@ -145,15 +144,11 @@ where
 }
 
 #[derive(Clone)]
-pub struct ActorSystem<T: Clone + Send + 'static, R: Send + 'static> {
-    handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>>,
+pub struct ActorSystem {
+    handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd>,
 }
 
-impl<T, R> Default for ActorSystem<T, R>
-where
-    T: Clone + Send + 'static,
-    R: Send + 'static,
-{
+impl Default for ActorSystem {
     fn default() -> Self {
         let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut me = Self { handler_tx };
@@ -162,28 +157,24 @@ where
     }
 }
 
-impl<T, R> ActorSystem<T, R>
-where
-    T: Sized + Send + Clone + 'static,
-    R: Sized + Send + 'static,
-{
+impl ActorSystem {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn handler_tx(&self) -> tokio::sync::mpsc::UnboundedSender<ActorSystemCmd<T, R>> {
+    pub fn handler_tx(&self) -> tokio::sync::mpsc::UnboundedSender<ActorSystemCmd> {
         self.handler_tx.clone()
     }
 
     fn run(
         &mut self,
-        mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd<T, R>>,
+        mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut map = HashMap::<
                 String,
                 (
-                    tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
+                    tokio::sync::mpsc::UnboundedSender<Message>,
                     tokio::sync::mpsc::UnboundedSender<()>,
                     tokio::sync::mpsc::UnboundedSender<()>,
                     LifeCycle,
@@ -248,7 +239,7 @@ where
     pub async fn register(
         &mut self,
         address: String,
-        tx: tokio::sync::mpsc::UnboundedSender<Message<T, R>>,
+        tx: tokio::sync::mpsc::UnboundedSender<Message>,
         restart_tx: tokio::sync::mpsc::UnboundedSender<()>,
         kill_tx: tokio::sync::mpsc::UnboundedSender<()>,
         life_cycle: LifeCycle,
@@ -275,14 +266,17 @@ where
         let _ = self.handler_tx.send(ActorSystemCmd::Unregister(address));
     }
 
-    pub async fn send(&self, address: String, msg: T) -> Result<(), ActorError<T, R>> {
+    pub async fn send<T>(&self, address: String, msg: T) -> Result<(), ActorError>
+    where
+        T: serde::Serialize,
+    {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FindActor(address.clone(), tx));
         if let Ok(Some((tx, ready))) = rx.await {
             if ready {
-                let _ = tx.send(Message::new(msg, None))?;
+                let _ = tx.send(Message::new(bincode::serialize(&msg)?, None))?;
                 Ok(())
             } else {
                 Err(ActorError::ActorNotReady(address))
@@ -292,16 +286,20 @@ where
         }
     }
 
-    pub async fn send_and_recv(&self, address: String, msg: T) -> Result<R, ActorError<T, R>> {
+    pub async fn send_and_recv<T, R>(&self, address: String, msg: T) -> Result<R, ActorError>
+    where
+        T: serde::Serialize,
+        R: serde::de::DeserializeOwned,
+    {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FindActor(address.clone(), tx));
         if let Ok(Some((tx, ready))) = rx.await {
             if ready {
-                let (result_tx, result_rx) = tokio::sync::oneshot::channel::<R>();
-                let _ = tx.send(Message::new(msg, Some(result_tx)))?;
-                Ok(result_rx.await?)
+                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                let _ = tx.send(Message::new(bincode::serialize(&msg)?, Some(result_tx)))?;
+                Ok(bincode::deserialize::<R>(&result_rx.await?)?)
             } else {
                 Err(ActorError::ActorNotReady(address))
             }
@@ -310,19 +308,28 @@ where
         }
     }
 
-    pub async fn run_job(
+    pub async fn run_job<T, R>(
         &self,
         address: String,
         subscript: bool,
         job: JobSpec,
         msg: T,
     ) -> Result<
-        Option<
-            tokio::sync::mpsc::UnboundedReceiver<Result<R, tokio::sync::oneshot::error::RecvError>>,
-        >,
-        ActorError<T, R>,
-    > {
+        Option<tokio::sync::mpsc::UnboundedReceiver<Result<R, Box<bincode::ErrorKind>>>>,
+        ActorError,
+    >
+    where
+        T: serde::Serialize + Clone,
+        R: serde::de::DeserializeOwned + Send + 'static,
+    {
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let msg = match bincode::serialize(&msg) {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!("Serialize message failed: {:?}", e);
+                return Err(ActorError::from(e));
+            }
+        };
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FindActor(address.clone(), tx));
@@ -331,16 +338,23 @@ where
                 let tx = tx.clone();
                 if subscript {
                     let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
+                    let msg = msg.clone();
                     tokio::spawn(async move {
                         let mut i = 0;
                         if let Some(interval) = job.interval() {
                             loop {
                                 i += 1;
                                 if job.start_at() <= std::time::SystemTime::now() {
-                                    let (result_tx, result_rx) =
-                                        tokio::sync::oneshot::channel::<R>();
+                                    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                                     let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
-                                    let _ = sub_tx.send(result_rx.await);
+                                    let result = match result_rx.await {
+                                        Ok(result) => result,
+                                        Err(e) => {
+                                            error!("Receive result failed: {:?}", e);
+                                            break;
+                                        }
+                                    };
+                                    let _ = sub_tx.send(bincode::deserialize::<R>(&result));
                                     tokio::time::sleep(interval).await;
                                     if let Some(max_iter) = job.max_iter() {
                                         if i >= max_iter {
@@ -351,9 +365,24 @@ where
                             }
                         } else {
                             if job.start_at() <= std::time::SystemTime::now() {
-                                let (result_tx, result_rx) = tokio::sync::oneshot::channel::<R>();
-                                let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
-                                let _ = sub_tx.send(result_rx.await);
+                                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                                let msg = match bincode::serialize(&msg) {
+                                    Ok(msg) => msg,
+                                    Err(e) => {
+                                        error!("Serialize message failed: {:?}", e);
+                                        return;
+                                    }
+                                };
+                                let _ = tx.send(Message::new(msg, Some(result_tx)));
+                                let result =
+                                    match result_rx.await.map(|x| bincode::deserialize::<R>(&x)) {
+                                        Ok(result) => result,
+                                        Err(e) => {
+                                            error!("Receive result failed: {:?}", e);
+                                            return;
+                                        }
+                                    };
+                                let _ = sub_tx.send(result);
                             }
                         }
                     });

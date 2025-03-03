@@ -1,107 +1,130 @@
-use crate::{error::ActorError, Actor, ActorSystem};
+use crate::{Actor, ActorError, ActorSystem, JobSpec};
 
-#[derive(Clone, Debug)]
-pub enum MyMessage {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum MyMessage1 {
     A(String),
+    C(String),
+}
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum MyMessage2 {
     B(String),
-    Exit,
 }
 
 #[derive(thiserror::Error, Debug)]
-enum MyError<T, R>
-where
-    T: Sized + Send + Clone,
-    R: Sized + Send,
-{
+enum MyError {
     #[error("bye")]
     Exit,
     #[error(transparent)]
-    ActorError(#[from] ActorError<T, R>),
+    ActorError(#[from] ActorError),
 }
 
-struct MyActor {
+struct MyActor1 {
+    pub address: String,
+}
+
+struct MyActor2 {
     pub address: String,
 }
 
 #[async_trait::async_trait]
-impl Actor<MyMessage, (), MyError<MyMessage, ()>> for MyActor {
+impl Actor<MyMessage1, MyMessage1, MyError> for MyActor1 {
     fn address(&self) -> &str {
         &self.address
     }
 
-    async fn actor(&mut self, msg: MyMessage) -> Result<(), MyError<MyMessage, ()>> {
-        match msg {
-            MyMessage::A(s) => {
-                println!("got A: {}", s);
-            }
-            MyMessage::B(s) => {
-                println!("got B: {}", s);
-            }
-            MyMessage::Exit => {
-                println!("got Exit");
-                return Err(MyError::Exit);
-            }
-        }
-        Ok(())
+    async fn actor(&mut self, msg: MyMessage1) -> Result<MyMessage1, MyError> {
+        println!("got MyMessage1: {:?}", msg);
+        Ok(msg)
+    }
+}
+
+#[async_trait::async_trait]
+impl Actor<MyMessage2, MyMessage2, MyError> for MyActor2 {
+    fn address(&self) -> &str {
+        &self.address
     }
 
-    async fn pre_start(&mut self) {}
-    async fn pre_restart(&mut self) {}
-    async fn post_stop(&mut self) {}
-    async fn post_restart(&mut self) {}
+    async fn actor(&mut self, msg: MyMessage2) -> Result<MyMessage2, MyError> {
+        println!("got MyMessage2: {:?}", msg);
+        Ok(msg)
+    }
 }
 
 #[tokio::test]
 async fn test() {
     let mut actor_system = ActorSystem::new();
-    let actor = MyActor {
-        address: "some-address".to_string(),
+
+    let actor1 = MyActor1 {
+        address: "some-address1".to_string(),
     };
-    actor.register(&mut actor_system, false).await;
-    let actor2 = MyActor {
+    actor1.register(&mut actor_system, false).await;
+
+    let actor2 = MyActor2 {
         address: "some-address2".to_string(),
     };
+    actor2.register(&mut actor_system, false).await;
 
     let _ = actor_system
         .send(
-            "some-address".to_string(),    /* address */
-            MyMessage::A("a".to_string()), /* message */
+            "some-address1".to_string(),     /* address */
+            MyMessage1::A("a1".to_string()), /* message */
         )
         .await;
-    actor_system
-        .send_and_recv(
-            "some-address".to_string(),    /* address */
-            MyMessage::B("b".to_string()), /* message */
-        )
-        .await
-        .unwrap();
+    println!(
+        "send_and_recv -> {:?}",
+        actor_system
+            .send_and_recv::<MyMessage2, MyMessage2>(
+                "some-address2".to_string(),     /* address */
+                MyMessage2::B("b1".to_string()), /* message */
+            )
+            .await
+            .unwrap()
+    );
 
     // restart actor
-    actor_system.restart("some-address".to_string() /* address */);
+    actor_system.restart("some-address1".to_string() /* address */);
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     let actor_system_move = actor_system.clone();
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         actor_system_move
-            .send_and_recv(
-                "some-address2".to_string(),   /* address */
-                MyMessage::A("a".to_string()), /* message */
+            .send_and_recv::<MyMessage1, MyMessage1>(
+                "some-address1".to_string(),     /* address */
+                MyMessage1::A("a2".to_string()), /* message */
             )
             .await
             .unwrap();
     });
-    actor2.register(&mut actor_system, false).await;
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     actor_system
-        .send_and_recv(
-            "some-address2".to_string(),   /* address */
-            MyMessage::A("a".to_string()), /* message */
+        .send_and_recv::<MyMessage2, MyMessage2>(
+            "some-address2".to_string(),     /* address */
+            MyMessage2::B("b2".to_string()), /* message */
         )
         .await
         .unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
+    let job = JobSpec::new(
+        Some(2),                                 /* max_iter */
+        Some(std::time::Duration::from_secs(3)), /* interval */
+        std::time::SystemTime::now(),            /* start_at */
+    );
+    if let Ok(Some(mut recv_rx)) = actor_system
+        .run_job::<MyMessage1, MyMessage1>(
+            "some-address1".to_string(),    /* address */
+            true, /* whether subscribe the handler result or not(true => Some(rx)) */
+            job,  /* job as JobSpec */
+            MyMessage1::C("c".to_string()), /* message */
+        )
+        .await
+    {
+        while let Some(result) = recv_rx.recv().await {
+            println!("result returned - {:?}", result);
+        }
+    }
     // kill and unregister actor
-    actor_system.unregister("some-address".to_string() /* address */);
+    actor_system.unregister("some-address1".to_string() /* address */);
+    actor_system.unregister("some-address2".to_string() /* address */);
 }
