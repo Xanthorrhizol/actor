@@ -33,7 +33,7 @@ impl Actor<MyMessage1, MyMessage1, MyError> for MyActor1 {
     }
 
     async fn actor(&mut self, msg: MyMessage1) -> Result<MyMessage1, MyError> {
-        println!("got MyMessage1: {:?}", msg);
+        println!("[{}] got MyMessage1: {:?}", self.address(), msg);
         Ok(msg)
     }
 }
@@ -45,7 +45,7 @@ impl Actor<MyMessage2, MyMessage2, MyError> for MyActor2 {
     }
 
     async fn actor(&mut self, msg: MyMessage2) -> Result<MyMessage2, MyError> {
-        println!("got MyMessage2: {:?}", msg);
+        println!("[{}] got MyMessage2: {:?}", self.address(), msg);
         Ok(msg)
     }
 }
@@ -55,26 +55,32 @@ async fn test() {
     let mut actor_system = ActorSystem::new();
 
     let actor1 = MyActor1 {
-        address: "some-address1".to_string(),
+        address: "some-address11".to_string(),
     };
     actor1.register(&mut actor_system, false).await;
 
     let actor2 = MyActor2 {
-        address: "some-address2".to_string(),
+        address: "some-address21".to_string(),
     };
     actor2.register(&mut actor_system, false).await;
 
+    let actor3 = MyActor1 {
+        address: "some-address12".to_string(),
+    };
+    actor3.register(&mut actor_system, false).await;
+
     let _ = actor_system
-        .send(
-            "some-address1".to_string(),     /* address */
+        .send_broadcast(
+            "some-address1*".to_string(),    /* address */
             MyMessage1::A("a1".to_string()), /* message */
         )
         .await;
     println!(
-        "send_and_recv -> {:?}",
+        "[{}] send_and_recv -> {:?}",
+        "some-address21",
         actor_system
             .send_and_recv::<MyMessage2, MyMessage2>(
-                "some-address2".to_string(),     /* address */
+                "some-address21".to_string(),    /* address */
                 MyMessage2::B("b1".to_string()), /* message */
             )
             .await
@@ -82,7 +88,7 @@ async fn test() {
     );
 
     // restart actor
-    actor_system.restart("some-address1".to_string() /* address */);
+    actor_system.restart("some-address1*".to_string() /* address as regex */);
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     let actor_system_move = actor_system.clone();
@@ -90,7 +96,7 @@ async fn test() {
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         actor_system_move
             .send_and_recv::<MyMessage1, MyMessage1>(
-                "some-address1".to_string(),     /* address */
+                "some-address11".to_string(),    /* address */
                 MyMessage1::A("a2".to_string()), /* message */
             )
             .await
@@ -99,7 +105,7 @@ async fn test() {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     actor_system
         .send_and_recv::<MyMessage2, MyMessage2>(
-            "some-address2".to_string(),     /* address */
+            "some-address21".to_string(),    /* address */
             MyMessage2::B("b2".to_string()), /* message */
         )
         .await
@@ -113,7 +119,7 @@ async fn test() {
     );
     if let Ok(Some(mut recv_rx)) = actor_system
         .run_job::<MyMessage1, MyMessage1>(
-            "some-address1".to_string(),    /* address */
+            "some-address11".to_string(),   /* address */
             true, /* whether subscribe the handler result or not(true => Some(rx)) */
             job,  /* job as JobSpec */
             MyMessage1::C("c".to_string()), /* message */
@@ -125,6 +131,5 @@ async fn test() {
         }
     }
     // kill and unregister actor
-    actor_system.unregister("some-address1".to_string() /* address */);
-    actor_system.unregister("some-address2".to_string() /* address */);
+    actor_system.unregister("*".to_string() /* address as regex */);
 }

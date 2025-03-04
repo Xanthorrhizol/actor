@@ -57,7 +57,7 @@ impl Actor<MyMessage1, MyMessage1, MyError> for MyActor1 {
     }
 
     async fn actor(&mut self, msg: MyMessage1) -> Result<MyMessage1, MyError> {
-        println!("got MyMessage1: {:?}", msg);
+        println!("[{}] got MyMessage1: {:?}", self.address(), msg);
         Ok(msg)
     }
 }
@@ -69,7 +69,7 @@ impl Actor<MyMessage2, MyMessage2, MyError> for MyActor2 {
     }
 
     async fn actor(&mut self, msg: MyMessage2) -> Result<MyMessage2, MyError> {
-        println!("got MyMessage2: {:?}", msg);
+        println!("[{}] got MyMessage2: {:?}", self.address(), msg);
         Ok(msg)
     }
 }
@@ -79,7 +79,7 @@ impl Actor<MyMessage2, MyMessage2, MyError> for MyActor2 {
 
 ```rust
 let actor1 = MyActor1 {
-    address: "some-address1".to_string(),
+    address: "some-address11".to_string(),
 };
 actor1.register(&mut actor_system).await;
 
@@ -87,13 +87,19 @@ let actor2 = MyActor2 {
     address: "some-address2".to_string(),
 };
 actor2.register(&mut actor_system).await;
+
+let actor3 = MyActor1 {
+    address: "some-address12".to_string(),
+};
+actor3.register(&mut actor_system).await;
 ```
 
 5. use it
 
 ```rust
-let _ = actor_system.send(
-  "some-address1".to_string(), /* address */
+// you can send message to multiple actor at once using address with regex
+let _ = actor_system.send_broadcast(
+  "some-address1*".to_string(), /* address as regex */
   MyMessage1::A("a1".to_string()), /* message */
 ).await;
 let result = actor_system.send_and_recv::<MyMessage2, MyMessage2>(
@@ -101,24 +107,21 @@ let result = actor_system.send_and_recv::<MyMessage2, MyMessage2>(
   MyMessage2::B("b1".to_string()), /* message */
 ).await;
 
-// restart actor
+// restart actors
 actor_system.restart(
-  "some-address1".to_string(), /* address */
+  "some-address1*".to_string(), /* address as regex */
 );
 // it needs some time. TODO: handle it inside of restart function
 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-let result = actor_system.send_and_recv::<MyMessage1, MyMessage1>(
-  "some-address1".to_string(), /* address */
-  MyMessage::A("a2".to_string()), /* message */
+let result = actor_system.send_and_recv::<MyMessage2, MyMessage2>(
+  "some-address21".to_string(), /* address */
+  MyMessage2::B("b2".to_string()), /* message */
 ).await;
 
 // kill and unregister actor
 actor_system.unregister(
-  "some-address1".to_string(), /* address */
-);
-actor_system.unregister(
-  "some-address2".to_string(), /* address */
+  "*".to_string(), /* address */
 );
 ```
 

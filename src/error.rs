@@ -9,6 +9,8 @@ pub enum ActorError {
     UnboundedChannelSend(#[from] tokio::sync::mpsc::error::SendError<Message>),
     #[error(transparent)]
     BincodeError(#[from] bincode::Error),
+    #[error(transparent)]
+    AddressRegexError(#[from] regex::Error),
 
     #[error("Address {0} not found")]
     AddressNotFound(String),
