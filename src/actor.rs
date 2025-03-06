@@ -1,7 +1,7 @@
 use crate::LifeCycle;
 use crate::error::ActorError;
 use crate::types::{JobSpec, Message};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 
 pub enum ActorSystemCmd {
@@ -172,7 +172,7 @@ impl ActorSystem {
         mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let mut address_list = Vec::<String>::new();
+            let mut address_list = HashSet::<String>::new();
             let mut map = HashMap::<
                 String,
                 (
@@ -180,7 +180,6 @@ impl ActorSystem {
                     tokio::sync::mpsc::UnboundedSender<()>,
                     tokio::sync::mpsc::UnboundedSender<()>,
                     LifeCycle,
-                    usize,
                 ),
             >::new();
             while let Some(msg) = handler_rx.recv().await {
@@ -194,11 +193,8 @@ impl ActorSystem {
                         result_tx,
                     ) => {
                         debug!("Register actor with address {}", address);
-                        map.insert(
-                            address.clone(),
-                            (tx, restart_tx, kill_tx, life_cycle, address_list.len()),
-                        );
-                        address_list.push(address);
+                        map.insert(address.clone(), (tx, restart_tx, kill_tx, life_cycle));
+                        address_list.insert(address);
                         let _ = result_tx.send(());
                     }
                     ActorSystemCmd::Restart(address_regex) => {
@@ -211,7 +207,7 @@ impl ActorSystem {
                             }
                         };
                         for address in addresses {
-                            if let Some((_tx, restart_tx, _kill_tx, _life_cycle, _idx)) =
+                            if let Some((_tx, restart_tx, _kill_tx, _life_cycle)) =
                                 map.get(&address)
                             {
                                 let _ = restart_tx.send(());
@@ -227,23 +223,17 @@ impl ActorSystem {
                                 continue;
                             }
                         };
-                        let mut idxs = Vec::new();
                         for address in addresses {
                             match map.entry(address.to_string()) {
                                 std::collections::hash_map::Entry::Occupied(mut entry) => {
                                     let _ = entry.get_mut().2.send(());
-                                    idxs.push(entry.get().4);
                                     entry.remove_entry();
+                                    address_list.remove(&address);
                                 }
                                 std::collections::hash_map::Entry::Vacant(_) => {
                                     continue;
                                 }
                             }
-                        }
-                        idxs.sort();
-                        idxs.reverse();
-                        for idx in idxs {
-                            address_list.remove(idx);
                         }
                     }
                     ActorSystemCmd::FilterAddress(address_regex, result_tx) => {
@@ -259,9 +249,7 @@ impl ActorSystem {
                     }
                     ActorSystemCmd::FindActor(address, result_tx) => {
                         debug!("FindActor with address {}", address);
-                        if let Some((tx, _restart_tx, _kill_tx, life_cycle, _idx)) =
-                            map.get(&address)
-                        {
+                        if let Some((tx, _restart_tx, _kill_tx, life_cycle)) = map.get(&address) {
                             let _ = result_tx.send(Some((
                                 tx.clone(),
                                 match life_cycle {
@@ -519,7 +507,10 @@ impl ActorSystem {
     }
 }
 
-fn filter_address(address_list: &Vec<String>, regex: &str) -> Result<Vec<String>, regex::Error> {
+fn filter_address(
+    address_list: &HashSet<String>,
+    regex: &str,
+) -> Result<Vec<String>, regex::Error> {
     let regex = regex::Regex::new(&format!("^{}$", regex)).map_err(|e| {
         error!("Regex error: {:?}", e);
         e
