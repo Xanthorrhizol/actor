@@ -171,7 +171,7 @@ impl ActorSystem {
         &mut self,
         mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd>,
     ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             let mut address_list = HashSet::<String>::new();
             let mut map = HashMap::<
                 String,
@@ -182,7 +182,7 @@ impl ActorSystem {
                     LifeCycle,
                 ),
             >::new();
-            while let Some(msg) = handler_rx.recv().await {
+            while let Some(msg) = tokio::runtime::Handle::current().block_on(handler_rx.recv()) {
                 match msg {
                     ActorSystemCmd::Register(
                         address,
