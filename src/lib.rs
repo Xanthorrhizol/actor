@@ -10,7 +10,6 @@ pub use actor::*;
 
 #[macro_use]
 pub extern crate log;
-extern crate bincode;
 
 #[derive(Clone, Debug)]
 pub enum LifeCycle {

@@ -1,5 +1,3 @@
-use crate::ActorError;
-
 #[derive(Debug)]
 pub struct Message {
     inner: Vec<u8>,
@@ -19,14 +17,6 @@ impl Message {
         Self { inner, result_tx }
     }
 
-    pub fn from<T>(inner: T, result_tx: Option<tokio::sync::oneshot::Sender<Vec<u8>>>) -> Self
-    where
-        T: serde::Serialize,
-    {
-        let inner = bincode::serialize(&inner).unwrap();
-        Self { inner, result_tx }
-    }
-
     pub fn inner(&self) -> &Vec<u8> {
         &self.inner
     }
@@ -35,20 +25,6 @@ impl Message {
         let tx = self.result_tx.take();
         self.result_tx = None;
         tx
-    }
-
-    pub fn serialize<T>(&self) -> Result<Vec<u8>, ActorError>
-    where
-        T: serde::Serialize,
-    {
-        Ok(bincode::serialize(&self.inner)?)
-    }
-
-    pub fn deserialize<R>(&self) -> Result<R, ActorError>
-    where
-        R: serde::de::DeserializeOwned,
-    {
-        Ok(bincode::deserialize::<R>(&self.inner)?)
     }
 }
 

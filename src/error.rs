@@ -8,7 +8,9 @@ pub enum ActorError {
     #[error(transparent)]
     UnboundedChannelSend(#[from] tokio::sync::mpsc::error::SendError<Message>),
     #[error(transparent)]
-    BincodeError(#[from] bincode::Error),
+    RmpDecodeError(#[from] rmp_serde::decode::Error),
+    #[error(transparent)]
+    RmpEncodeError(#[from] rmp_serde::encode::Error),
     #[error(transparent)]
     AddressRegexError(#[from] regex::Error),
 
