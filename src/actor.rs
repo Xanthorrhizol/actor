@@ -520,7 +520,7 @@ impl ActorSystem {
 }
 
 fn filter_address(address_list: &Vec<String>, regex: &str) -> Result<Vec<String>, regex::Error> {
-    let regex = regex::Regex::new(regex).map_err(|e| {
+    let regex = regex::Regex::new(&format!("^{}$", regex)).map_err(|e| {
         error!("Regex error: {:?}", e);
         e
     })?;
