@@ -79,17 +79,17 @@ impl Actor<MyMessage2, MyMessage2, MyError> for MyActor2 {
 
 ```rust
 let actor1 = MyActor1 {
-    address: "some-address11".to_string(),
+    address: "/some/address/1/1".to_string(),
 };
 actor1.register(&mut actor_system).await;
 
 let actor2 = MyActor2 {
-    address: "some-address2".to_string(),
+    address: "/some/address/2".to_string(),
 };
 actor2.register(&mut actor_system).await;
 
 let actor3 = MyActor1 {
-    address: "some-address12".to_string(),
+    address: "/some/address/1/2".to_string(),
 };
 actor3.register(&mut actor_system).await;
 ```
@@ -99,23 +99,23 @@ actor3.register(&mut actor_system).await;
 ```rust
 // you can send message to multiple actor at once using address with regex
 let _ = actor_system.send_broadcast(
-  "some-address1*".to_string(), /* address as regex */
+  "/some/address/1/*".to_string(), /* address as regex */
   MyMessage1::A("a1".to_string()), /* message */
 ).await;
 let result = actor_system.send_and_recv::<MyMessage2, MyMessage2>(
-  "some-address2".to_string(), /* address */
+  "/some/address/2".to_string(), /* address */
   MyMessage2::B("b1".to_string()), /* message */
 ).await;
 
 // restart actors
 actor_system.restart(
-  "some-address1*".to_string(), /* address as regex */
+  "/some/address/1/*".to_string(), /* address as regex */
 );
 // it needs some time. TODO: handle it inside of restart function
 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
 let result = actor_system.send_and_recv::<MyMessage2, MyMessage2>(
-  "some-address21".to_string(), /* address */
+  "/some/address/2".to_string(), /* address */
   MyMessage2::B("b2".to_string()), /* message */
 ).await;
 
@@ -139,7 +139,7 @@ let job = JobSpec::new(
   std::time::SystemTime::now(), /* start_at */
 );
 if let Ok(Some(recv_rx)) = actor_system.run_job::<MyMessage1, MyMessage1>(
-  "some-address1".to_string(), /* address */
+  "/some/address/1".to_string(), /* address */
   true, /* whether subscribe the handler result or not(true => Some(rx)) */
   job, /* job as JobSpec */
   MyMessage1::C("c".to_string()), /* message */

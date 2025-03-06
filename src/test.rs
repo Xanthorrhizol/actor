@@ -55,32 +55,32 @@ async fn test() {
     let mut actor_system = ActorSystem::new();
 
     let actor1 = MyActor1 {
-        address: "some-address11".to_string(),
+        address: "/some/address/1/1".to_string(),
     };
     actor1.register(&mut actor_system, false).await;
 
     let actor2 = MyActor2 {
-        address: "some-address21".to_string(),
+        address: "/some/address/2/1".to_string(),
     };
     actor2.register(&mut actor_system, false).await;
 
     let actor3 = MyActor1 {
-        address: "some-address12".to_string(),
+        address: "/some/address/1/2".to_string(),
     };
     actor3.register(&mut actor_system, false).await;
 
     let _ = actor_system
         .send_broadcast(
-            "some-address1*".to_string(),    /* address */
+            "/some/address/1/*".to_string(), /* address */
             MyMessage1::A("a1".to_string()), /* message */
         )
         .await;
     println!(
         "[{}] send_and_recv -> {:?}",
-        "some-address21",
+        "/some/address/2/1",
         actor_system
             .send_and_recv::<MyMessage2, MyMessage2>(
-                "some-address21".to_string(),    /* address */
+                "/some/address/2/1".to_string(), /* address */
                 MyMessage2::B("b1".to_string()), /* message */
             )
             .await
@@ -88,7 +88,7 @@ async fn test() {
     );
 
     // restart actor
-    actor_system.restart("some-address1*".to_string() /* address as regex */);
+    actor_system.restart("/some/address/1/*".to_string() /* address as regex */);
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     let actor_system_move = actor_system.clone();
@@ -96,7 +96,7 @@ async fn test() {
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         actor_system_move
             .send_and_recv::<MyMessage1, MyMessage1>(
-                "some-address11".to_string(),    /* address */
+                "/some/address/1/1".to_string(), /* address */
                 MyMessage1::A("a2".to_string()), /* message */
             )
             .await
@@ -105,7 +105,7 @@ async fn test() {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     actor_system
         .send_and_recv::<MyMessage2, MyMessage2>(
-            "some-address21".to_string(),    /* address */
+            "/some/address/2/1".to_string(), /* address */
             MyMessage2::B("b2".to_string()), /* message */
         )
         .await
@@ -119,7 +119,7 @@ async fn test() {
     );
     if let Ok(Some(mut recv_rx)) = actor_system
         .run_job::<MyMessage1, MyMessage1>(
-            "some-address11".to_string(),   /* address */
+            "/some/address/1/1".to_string(), /* address */
             true, /* whether subscribe the handler result or not(true => Some(rx)) */
             job,  /* job as JobSpec */
             MyMessage1::C("c".to_string()), /* message */

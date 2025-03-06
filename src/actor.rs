@@ -511,7 +511,7 @@ fn filter_address(
     address_list: &HashSet<String>,
     regex: &str,
 ) -> Result<Vec<String>, regex::Error> {
-    let regex = regex::Regex::new(&format!("^{}$", regex)).map_err(|e| {
+    let regex = regex::Regex::new(&format!("^{}$", regex.replace("*", "(\\S+)"))).map_err(|e| {
         error!("Regex error: {:?}", e);
         e
     })?;
