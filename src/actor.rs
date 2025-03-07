@@ -290,6 +290,20 @@ impl ActorSystem {
         })
     }
 
+    pub async fn filter_address(&mut self, address_regex: String) -> Vec<String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .handler_tx
+            .send(ActorSystemCmd::FilterAddress(address_regex, tx));
+        match rx.await {
+            Ok(addresses) => addresses,
+            Err(e) => {
+                error!("Receive address list failed: {:?}", e);
+                Vec::new()
+            }
+        }
+    }
+
     pub async fn register(
         &mut self,
         address: String,
