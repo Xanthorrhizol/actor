@@ -27,24 +27,32 @@ struct MyActor2 {
 }
 
 #[async_trait::async_trait]
-impl Actor<MyMessage1, MyMessage1, MyError> for MyActor1 {
+impl Actor for MyActor1 {
+    type Message = MyMessage1;
+    type Result = MyMessage1;
+    type Error = MyError;
+
     fn address(&self) -> &str {
         &self.address
     }
 
-    async fn actor(&mut self, msg: MyMessage1) -> Result<MyMessage1, MyError> {
+    async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error> {
         println!("[{}] got MyMessage1: {:?}", self.address(), msg);
         Ok(msg)
     }
 }
 
 #[async_trait::async_trait]
-impl Actor<MyMessage2, MyMessage2, MyError> for MyActor2 {
+impl Actor for MyActor2 {
+    type Message = MyMessage2;
+    type Result = MyMessage2;
+    type Error = MyError;
+
     fn address(&self) -> &str {
         &self.address
     }
 
-    async fn actor(&mut self, msg: MyMessage2) -> Result<MyMessage2, MyError> {
+    async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error> {
         println!("[{}] got MyMessage2: {:?}", self.address(), msg);
         Ok(msg)
     }
@@ -70,7 +78,7 @@ async fn test() {
     actor3.register(&mut actor_system, false).await;
 
     let _ = actor_system
-        .send_broadcast(
+        .send_broadcast::<MyActor1>(
             "/some/address/1/*".to_string(), /* address */
             MyMessage1::A("a1".to_string()), /* message */
         )
@@ -79,7 +87,7 @@ async fn test() {
         "[{}] send_and_recv -> {:?}",
         "/some/address/2/1",
         actor_system
-            .send_and_recv::<MyMessage2, MyMessage2>(
+            .send_and_recv::<MyActor2>(
                 "/some/address/2/1".to_string(), /* address */
                 MyMessage2::B("b1".to_string()), /* message */
             )
@@ -95,7 +103,7 @@ async fn test() {
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         actor_system_move
-            .send_and_recv::<MyMessage1, MyMessage1>(
+            .send_and_recv::<MyActor1>(
                 "/some/address/1/1".to_string(), /* address */
                 MyMessage1::A("a2".to_string()), /* message */
             )
@@ -104,7 +112,7 @@ async fn test() {
     });
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     actor_system
-        .send_and_recv::<MyMessage2, MyMessage2>(
+        .send_and_recv::<MyActor2>(
             "/some/address/2/1".to_string(), /* address */
             MyMessage2::B("b2".to_string()), /* message */
         )
@@ -118,7 +126,7 @@ async fn test() {
         std::time::SystemTime::now(),            /* start_at */
     );
     if let Ok(Some(mut recv_rx)) = actor_system
-        .run_job::<MyMessage1, MyMessage1>(
+        .run_job::<MyActor1>(
             "/some/address/1/1".to_string(), /* address */
             true, /* whether subscribe the handler result or not(true => Some(rx)) */
             job,  /* job as JobSpec */

@@ -51,7 +51,11 @@ struct MyActor2 {
 }
 
 #[async_trait::async_trait]
-impl Actor<MyMessage1, MyMessage1, MyError> for MyActor1 {
+impl Actor for MyActor1 {
+    type ActorMessage = MyMessage1;
+    type ActorResult = MyMessage1;
+    type ActorError = MyError;
+
     fn address(&self) -> &str {
         &self.address
     }
@@ -63,7 +67,11 @@ impl Actor<MyMessage1, MyMessage1, MyError> for MyActor1 {
 }
 
 #[async_trait::async_trait]
-impl Actor<MyMessage2, MyMessage2, MyError> for MyActor2 {
+impl Actor for MyActor2 {
+    type ActorMessage = MyMessage2;
+    type ActorResult = MyMessage2;
+    type ActorError = MyError;
+
     fn address(&self) -> &str {
         &self.address
     }
@@ -98,11 +106,11 @@ actor3.register(&mut actor_system).await;
 
 ```rust
 // you can send message to multiple actor at once using address with regex
-let _ = actor_system.send_broadcast(
+let _ = actor_system.send_broadcast::<MyActor1>(
   "/some/address/1/*".to_string(), /* address as regex */
   MyMessage1::A("a1".to_string()), /* message */
 ).await;
-let result = actor_system.send_and_recv::<MyMessage2, MyMessage2>(
+let result = actor_system.send_and_recv::<MyActor2>(
   "/some/address/2".to_string(), /* address */
   MyMessage2::B("b1".to_string()), /* message */
 ).await;
@@ -114,7 +122,7 @@ actor_system.restart(
 // it needs some time. TODO: handle it inside of restart function
 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-let result = actor_system.send_and_recv::<MyMessage2, MyMessage2>(
+let result = actor_system.send_and_recv::<MyActor2>(
   "/some/address/2".to_string(), /* address */
   MyMessage2::B("b2".to_string()), /* message */
 ).await;
@@ -138,7 +146,7 @@ let job = JobSpec::new(
   Some(std::time::Duration::from_secs(3)), /* interval */
   std::time::SystemTime::now(), /* start_at */
 );
-if let Ok(Some(recv_rx)) = actor_system.run_job::<MyMessage1, MyMessage1>(
+if let Ok(Some(recv_rx)) = actor_system.run_job::<MyActor1>(
   "/some/address/1".to_string(), /* address */
   true, /* whether subscribe the handler result or not(true => Some(rx)) */
   job, /* job as JobSpec */

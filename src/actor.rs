@@ -26,16 +26,19 @@ pub enum ActorSystemCmd {
 }
 
 #[async_trait::async_trait]
-pub trait Actor<T, R, E>
+pub trait Actor
 where
     Self: Sized + 'static,
-    T: Sized + Send + serde::de::DeserializeOwned,
-    R: Sized + Send + serde::Serialize,
-    E: Error + Send,
 {
+    type Message: Sized + Send + serde::Serialize + serde::de::DeserializeOwned;
+
+    type Result: Sized + Send + serde::Serialize + serde::de::DeserializeOwned;
+
+    type Error: Error + Send;
+
     fn address(&self) -> &str;
 
-    async fn actor(&mut self, msg: T) -> Result<R, E>;
+    async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error>;
 
     async fn pre_start(&mut self) {}
 
@@ -85,7 +88,7 @@ where
                 tokio::select! {
                     Some(mut msg) = rx.recv() => {
                         let result_tx = msg.result_tx();
-                        let msg_de = match rmp_serde::from_slice::<T>(msg.inner()) {
+                        let msg_de = match rmp_serde::from_slice::<Self::Message>(msg.inner()) {
                             Ok(msg) => msg,
                             Err(e) => {
                                 if kill_in_error {
@@ -336,9 +339,13 @@ impl ActorSystem {
             .send(ActorSystemCmd::Unregister(address_regex));
     }
 
-    pub async fn send<T>(&self, address: String, msg: T) -> Result<(), ActorError>
+    pub async fn send<T>(
+        &self,
+        address: String,
+        msg: <T as Actor>::Message,
+    ) -> Result<(), ActorError>
     where
-        T: serde::Serialize + serde::de::DeserializeOwned,
+        T: Actor,
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
@@ -358,10 +365,10 @@ impl ActorSystem {
     pub async fn send_broadcast<T>(
         &self,
         address_regex: String,
-        msg: T,
+        msg: <T as Actor>::Message,
     ) -> Vec<Result<(), ActorError>>
     where
-        T: serde::Serialize + serde::de::DeserializeOwned,
+        T: Actor,
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
@@ -405,10 +412,13 @@ impl ActorSystem {
         result
     }
 
-    pub async fn send_and_recv<T, R>(&self, address: String, msg: T) -> Result<R, ActorError>
+    pub async fn send_and_recv<T>(
+        &self,
+        address: String,
+        msg: <T as Actor>::Message,
+    ) -> Result<<T as Actor>::Result, ActorError>
     where
-        T: serde::Serialize + serde::de::DeserializeOwned,
-        R: serde::Serialize + serde::de::DeserializeOwned,
+        T: Actor,
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
@@ -418,7 +428,9 @@ impl ActorSystem {
             if ready {
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                 let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx)))?;
-                Ok(rmp_serde::from_slice::<R>(&result_rx.await?)?)
+                Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
+                    &result_rx.await?,
+                )?)
             } else {
                 Err(ActorError::ActorNotReady(address))
             }
@@ -427,19 +439,22 @@ impl ActorSystem {
         }
     }
 
-    pub async fn run_job<T, R>(
+    pub async fn run_job<T>(
         &self,
         address: String,
         subscript: bool,
         job: JobSpec,
-        msg: T,
+        msg: <T as Actor>::Message,
     ) -> Result<
-        Option<tokio::sync::mpsc::UnboundedReceiver<Result<R, rmp_serde::decode::Error>>>,
+        Option<
+            tokio::sync::mpsc::UnboundedReceiver<
+                Result<<T as Actor>::Result, rmp_serde::decode::Error>,
+            >,
+        >,
         ActorError,
     >
     where
-        T: serde::Serialize + Clone,
-        R: serde::de::DeserializeOwned + Send + 'static,
+        T: Actor,
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let msg = match rmp_serde::to_vec(&msg) {
@@ -473,7 +488,10 @@ impl ActorSystem {
                                             break;
                                         }
                                     };
-                                    let _ = sub_tx.send(rmp_serde::from_slice::<R>(&result));
+                                    let _ =
+                                        sub_tx.send(rmp_serde::from_slice::<<T as Actor>::Result>(
+                                            &result,
+                                        ));
                                     tokio::time::sleep(interval).await;
                                     if let Some(max_iter) = job.max_iter() {
                                         if i >= max_iter {
@@ -493,14 +511,16 @@ impl ActorSystem {
                                     }
                                 };
                                 let _ = tx.send(Message::new(msg, Some(result_tx)));
-                                let result =
-                                    match result_rx.await.map(|x| rmp_serde::from_slice::<R>(&x)) {
-                                        Ok(result) => result,
-                                        Err(e) => {
-                                            error!("Receive result failed: {:?}", e);
-                                            return;
-                                        }
-                                    };
+                                let result = match result_rx
+                                    .await
+                                    .map(|x| rmp_serde::from_slice::<<T as Actor>::Result>(&x))
+                                {
+                                    Ok(result) => result,
+                                    Err(e) => {
+                                        error!("Receive result failed: {:?}", e);
+                                        return;
+                                    }
+                                };
                                 let _ = sub_tx.send(result);
                             }
                         }

@@ -9,7 +9,7 @@ pub use crate::types::{JobSpec, Message};
 pub use actor::*;
 
 #[macro_use]
-pub extern crate log;
+extern crate log;
 
 #[derive(Clone, Debug)]
 pub enum LifeCycle {
