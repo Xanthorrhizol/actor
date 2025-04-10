@@ -147,7 +147,7 @@ let job = JobSpec::new(
   std::time::SystemTime::now(), /* start_at */
 );
 if let Ok(Some(recv_rx)) = actor_system.run_job::<MyActor1>(
-  "/some/address/1".to_string(), /* address */
+  "/some/address/1/1".to_string(), /* address */
   true, /* whether subscribe the handler result or not(true => Some(rx)) */
   job, /* job as JobSpec */
   MyMessage1::C("c".to_string()), /* message */
