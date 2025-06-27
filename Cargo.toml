@@ -1,6 +1,6 @@
 [package]
 name = "xan-actor"
-version = "4.3.0"
+version = "4.3.1"
 edition = "2024"
 authors = [ "Xanthorrhizol <xanthorrhizol@proton.me>" ]
 description = "Akka actor"
@@ -13,6 +13,7 @@ keywords = ["akka", "actor"]
 
 [dependencies]
 async-trait = { version = "0.1.68" }
+futures = "0.3.31"
 log = "0.4.17"
 regex = "1.11.1"
 rmp-serde = "1.3.0"
