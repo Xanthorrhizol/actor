@@ -1,7 +1,6 @@
 use crate::error::ActorError;
 use crate::types::{JobSpec, Message};
 use crate::LifeCycle;
-use futures::FutureExt;
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -86,15 +85,8 @@ where
             ));
             let _ = ready_tx.send(());
             if let Some(_) = loop {
-                let rx_fut = rx.recv().fuse();
-                tokio::pin!(rx_fut);
-                let kill_rx_fut = kill_rx.recv().fuse();
-                tokio::pin!(kill_rx_fut);
-                let restart_rx_fut = restart_rx.recv().fuse();
-                tokio::pin!(restart_rx_fut);
-
                 tokio::select! {
-                    Some(msg) = &mut rx_fut => {
+                    Some(msg) = rx.recv() => {
                         match self.actor(msg.inner()).await {
                            Ok(result) => {
                                 if let Some(result_tx) = msg.result_tx() {
@@ -111,11 +103,11 @@ where
                            }
                        }
                     }
-                    Some(_) = &mut kill_rx_fut => {
+                    Some(_) = kill_rx.recv() => {
                         info!("Kill actor: address={}", self.address());
                         break Some(());
                     }
-                    Some(_) = &mut restart_rx_fut => {
+                    Some(_) = restart_rx.recv() => {
                         info!("Restart actor: address={}", self.address());
                         break None;
                     }
