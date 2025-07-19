@@ -157,3 +157,31 @@ if let Ok(Some(recv_rx)) = actor_system.run_job::<MyActor1>(
     }
 }
 ```
+
+### Address Usage
+
+- You should use address as unique identifier for each actor.
+- If you register duplicated address, it will return `ActorError::AddressAlreadyExists`.
+
+```rust
+let actor = MyActor1 {
+    address: "/some/address/1/2".to_string(),
+};
+actor.register(&mut actor_system, false).await;
+
+let actor_duplicated = MyActor2 {
+    address: "/some/address/1/2".to_string(),
+};
+info!(
+    "[{}] test duplicated actor registration",
+    actor3_duplicated.address(),
+);
+
+assert!(
+    actor3_duplicated
+        .register(&mut actor_system, false)
+        .await
+        .err()
+        .is_some()
+);
+```
