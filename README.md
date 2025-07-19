@@ -174,11 +174,11 @@ let actor_duplicated = MyActor2 {
 };
 info!(
     "[{}] test duplicated actor registration",
-    actor3_duplicated.address(),
+    actor_duplicated.address(),
 );
 
 assert!(
-    actor3_duplicated
+    actor_duplicated
         .register(&mut actor_system, false)
         .await
         .err()
