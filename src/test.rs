@@ -1,3 +1,4 @@
+#![cfg(feature = "xan-log")]
 use crate::{Actor, ActorError, ActorSystem, JobSpec};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -37,7 +38,7 @@ impl Actor for MyActor1 {
     }
 
     async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error> {
-        println!("[{}] got MyMessage1: {:?}", self.address(), msg);
+        debug!("[{}] got MyMessage1: {:?}", self.address(), msg);
         Ok(msg)
     }
 }
@@ -53,13 +54,14 @@ impl Actor for MyActor2 {
     }
 
     async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error> {
-        println!("[{}] got MyMessage2: {:?}", self.address(), msg);
+        debug!("[{}] got MyMessage2: {:?}", self.address(), msg);
         Ok(msg)
     }
 }
 
 #[tokio::test]
 async fn test() {
+    xan_log::init_logger();
     let mut actor_system = ActorSystem::new();
 
     let actor1 = MyActor1 {
@@ -77,13 +79,28 @@ async fn test() {
     };
     actor3.register(&mut actor_system, false).await;
 
+    let actor3_duplicated = MyActor2 {
+        address: "/some/address/1/2".to_string(),
+    };
+    info!(
+        "[{}] test duplicated actor registration",
+        actor3_duplicated.address(),
+    );
+    assert!(
+        actor3_duplicated
+            .register(&mut actor_system, false)
+            .await
+            .err()
+            .is_some()
+    );
+
     let _ = actor_system
         .send_broadcast::<MyActor1>(
             "/some/address/1/*".to_string(), /* address */
             MyMessage1::A("a1".to_string()), /* message */
         )
         .await;
-    println!(
+    info!(
         "[{}] send_and_recv -> {:?}",
         "/some/address/2/1",
         actor_system
@@ -138,6 +155,7 @@ async fn test() {
             println!("result returned - {:?}", result);
         }
     }
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
     // kill and unregister actor
     actor_system.unregister("*".to_string() /* address as regex */);
 }
