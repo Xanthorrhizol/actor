@@ -342,28 +342,6 @@ impl ActorSystem {
         }
     }
 
-    pub async fn register(
-        &mut self,
-        address: String,
-        tx: tokio::sync::mpsc::UnboundedSender<Message>,
-        restart_tx: tokio::sync::mpsc::UnboundedSender<()>,
-        kill_tx: tokio::sync::mpsc::UnboundedSender<()>,
-        life_cycle: LifeCycle,
-    ) -> Result<(), ActorError> {
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        let _ = self.handler_tx.send(ActorSystemCmd::Register(
-            address, tx, restart_tx, kill_tx, life_cycle, result_tx, false,
-        ));
-        result_rx.await?
-    }
-
-    pub fn set_lifecycle(&mut self, address: &str, life_cycle: LifeCycle) {
-        let _ = self.handler_tx.send(ActorSystemCmd::SetLifeCycle(
-            address.to_string(),
-            life_cycle,
-        ));
-    }
-
     pub fn restart(&mut self, address_regex: String) {
         let _ = self.handler_tx.send(ActorSystemCmd::Restart(address_regex));
     }
