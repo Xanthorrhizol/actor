@@ -1,9 +1,3 @@
-> :bulb: A critical bug was found in the previous versions of `xan-actor`. Please use the latest version below.
-> - version >= 5.0.2 for 5.x.x
-> - version >= 4.4.1 for 4.x.x
-> - version >= 4.3.1 for 4.3.x
-> - version >= 1.3.3 for 1.x.x
-
 ## Actor
 
 ### Usage
