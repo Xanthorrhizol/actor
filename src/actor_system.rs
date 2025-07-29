@@ -227,8 +227,8 @@ impl ActorSystem {
                         let mut i = 0;
                         if let Some(interval) = job.interval() {
                             loop {
-                                i += 1;
                                 if job.start_at() <= std::time::SystemTime::now() {
+                                    i += 1;
                                     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                                     let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
                                     let result = match result_rx.await {
@@ -281,8 +281,8 @@ impl ActorSystem {
                         let mut i = 0;
                         if let Some(interval) = job.interval() {
                             loop {
-                                i += 1;
                                 if job.start_at() <= std::time::SystemTime::now() {
+                                    i += 1;
                                     let _ = tx.send(Message::new(msg.clone(), None));
                                     tokio::time::sleep(interval).await;
                                     if let Some(max_iter) = job.max_iter() {
