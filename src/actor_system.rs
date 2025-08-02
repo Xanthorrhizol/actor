@@ -31,21 +31,31 @@ pub enum ActorSystemCmd {
 /// It's clonable so that it can be shared across different parts of the application.
 pub struct ActorSystem {
     handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd>,
+    pub blocking: bool,
 }
 
 impl Default for ActorSystem {
     fn default() -> Self {
         let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut me = Self { handler_tx };
-        me.run(handler_rx);
+        let mut me = Self {
+            handler_tx,
+            blocking: true,
+        };
+        me.run(handler_rx, true);
         me
     }
 }
 
 impl ActorSystem {
     /// Creates a new ActorSystem instance
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(blocking: bool) -> Self {
+        let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut me = Self {
+            handler_tx,
+            blocking,
+        };
+        me.run(handler_rx, blocking);
+        me
     }
 
     /// Returns the handler channel sender for the ActorSystem.
@@ -189,10 +199,12 @@ impl ActorSystem {
     }
 
     /// Runs a job with the specified actor and message.
+    /// If you want to subscribe to the results, set `subscribe` to true.
+    /// It returns a receiver that you can use to receive the results.
     pub async fn run_job<T>(
         &self,
         address: String,
-        subscript: bool,
+        subscribe: bool,
         job: JobSpec,
         msg: <T as Actor>::Message,
     ) -> Result<
@@ -220,22 +232,29 @@ impl ActorSystem {
         if let Ok(Some((tx, ready))) = rx.await {
             if ready {
                 let tx = tx.clone();
-                if subscript {
+                if subscribe {
                     let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
                     let msg = msg.clone();
-                    tokio::spawn(async move {
+                    let _ = tokio::spawn(async move {
                         let mut i = 0;
                         if let Some(interval) = job.interval() {
                             loop {
                                 if job.start_at() <= std::time::SystemTime::now() {
                                     i += 1;
                                     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                                    let _ = tx.send(Message::new(msg.clone(), Some(result_tx)));
+                                    if let Err(e) =
+                                        tx.send(Message::new(msg.clone(), Some(result_tx)))
+                                    {
+                                        error!("Send message failed: {:?}", e);
+                                        drop(sub_tx);
+                                        return;
+                                    }
                                     let result = match result_rx.await {
                                         Ok(result) => result,
                                         Err(e) => {
                                             error!("Receive result failed: {:?}", e);
-                                            break;
+                                            drop(sub_tx);
+                                            return;
                                         }
                                     };
                                     let _ =
@@ -245,7 +264,8 @@ impl ActorSystem {
                                     tokio::time::sleep(interval).await;
                                     if let Some(max_iter) = job.max_iter() {
                                         if i >= max_iter {
-                                            break;
+                                            drop(sub_tx);
+                                            return;
                                         }
                                     }
                                 }
@@ -257,10 +277,14 @@ impl ActorSystem {
                                     Ok(msg) => msg,
                                     Err(e) => {
                                         error!("Serialize message failed: {:?}", e);
+                                        drop(sub_tx);
                                         return;
                                     }
                                 };
-                                let _ = tx.send(Message::new(msg, Some(result_tx)));
+                                if let Err(e) = tx.send(Message::new(msg, Some(result_tx))) {
+                                    error!("Send message failed: {:?}", e);
+                                    return;
+                                }
                                 let result = match result_rx
                                     .await
                                     .map(|x| rmp_serde::from_slice::<<T as Actor>::Result>(&x))
@@ -268,6 +292,7 @@ impl ActorSystem {
                                     Ok(result) => result,
                                     Err(e) => {
                                         error!("Receive result failed: {:?}", e);
+                                        drop(sub_tx);
                                         return;
                                     }
                                 };
@@ -277,17 +302,20 @@ impl ActorSystem {
                     });
                     Ok(Some(sub_rx))
                 } else {
-                    tokio::spawn(async move {
+                    let _ = tokio::spawn(async move {
                         let mut i = 0;
                         if let Some(interval) = job.interval() {
                             loop {
                                 if job.start_at() <= std::time::SystemTime::now() {
                                     i += 1;
-                                    let _ = tx.send(Message::new(msg.clone(), None));
+                                    if let Err(e) = tx.send(Message::new(msg.clone(), None)) {
+                                        error!("Send message failed: {:?}", e);
+                                        return;
+                                    }
                                     tokio::time::sleep(interval).await;
                                     if let Some(max_iter) = job.max_iter() {
                                         if i >= max_iter {
-                                            break;
+                                            return;
                                         }
                                     }
                                 }
@@ -311,8 +339,15 @@ impl ActorSystem {
     fn run(
         &mut self,
         handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd>,
-    ) -> tokio::task::JoinHandle<impl Future<Output = ()>> {
-        let handle = tokio::task::spawn_blocking(async || actor_system_loop(handler_rx).await);
+        blocking: bool,
+    ) -> tokio::task::JoinHandle<()> {
+        let handle = if blocking {
+            tokio::task::spawn_blocking(|| {
+                tokio::runtime::Handle::current().block_on(actor_system_loop(handler_rx))
+            })
+        } else {
+            tokio::spawn(actor_system_loop(handler_rx))
+        };
         handle
     }
 }

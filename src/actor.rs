@@ -77,6 +77,12 @@ where
                     restarted,
                 )) {
                     count += 1;
+                    error!(
+                        "Failed to register actor {}...({}): {:?}",
+                        self.address(),
+                        count,
+                        e
+                    );
                     if count > 10 {
                         let _ = ready_tx.send(Err(ActorError::UnhealthyActorSystem));
                         return Err(ActorError::UnhealthyActorSystem);
@@ -176,16 +182,25 @@ where
     ) -> Result<(), ActorError> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let actor_system_tx = actor_system.handler_tx();
-        let _ = tokio::task::spawn_blocking(move || {
-            let result = tokio::runtime::Handle::current().block_on(self.run_actor(
-                actor_system_tx,
-                kill_in_error,
-                tx,
-            ));
-            if let Err(e) = result {
-                error!("Actor {} run failed: {:?}", self.address(), e);
-            }
-        });
+        let _ = if actor_system.blocking {
+            tokio::task::spawn_blocking(move || {
+                let result = tokio::runtime::Handle::current().block_on(self.run_actor(
+                    actor_system_tx,
+                    kill_in_error,
+                    tx,
+                ));
+                if let Err(e) = result {
+                    error!("Actor {} run failed: {:?}", self.address(), e);
+                }
+            })
+        } else {
+            tokio::spawn(async move {
+                let result = self.run_actor(actor_system_tx, kill_in_error, tx).await;
+                if let Err(e) = result {
+                    error!("Actor {} run failed: {:?}", self.address(), e);
+                }
+            })
+        };
         if let Some(result) = rx.recv().await {
             result
         } else {
