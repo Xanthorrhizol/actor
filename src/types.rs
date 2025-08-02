@@ -33,6 +33,7 @@ impl Message {
     }
 }
 
+#[derive(Debug, Clone)]
 /// A specification for a job that can be executed by a worker thread.
 /// The `max_iter` is the maximum number of iterations the job will be executed.
 /// If `max_iter` is `None`, the job will be executed indefinitely.
