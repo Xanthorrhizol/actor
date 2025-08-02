@@ -1,4 +1,9 @@
 #[derive(Debug)]
+/// A message that can be sent to a worker thread.
+/// > You don't need to implement this trait.
+/// > It is a wrapper for rmp_serde encoded data that you sent.
+/// This message contains the data to be processed and an result channel.
+/// The result channel is used to send the result back to the sender.
 pub struct Message {
     inner: Vec<u8>,
     result_tx: Option<tokio::sync::oneshot::Sender<Vec<u8>>>,
@@ -28,6 +33,13 @@ impl Message {
     }
 }
 
+/// A specification for a job that can be executed by a worker thread.
+/// The `max_iter` is the maximum number of iterations the job will be executed.
+/// If `max_iter` is `None`, the job will be executed indefinitely.
+/// The `interval` is the time between two iterations of the job.
+/// If the `interval` is `None`, the job will be executed only once.
+/// The `start_at` is the time when the job will start executing.
+/// If the `start_at` is in the past, the job will start executing immediately.
 pub struct JobSpec {
     max_iter: Option<usize>,
     interval: Option<std::time::Duration>,

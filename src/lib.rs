@@ -14,6 +14,7 @@ pub use actor_system::*;
 extern crate log;
 
 #[derive(Clone, Debug)]
+/// Represents the lifecycle of an actor
 pub enum LifeCycle {
     Starting,
     Receiving,

@@ -1,6 +1,7 @@
 use crate::Message;
 use thiserror::Error;
 
+/// Error type for the Actor system
 #[derive(Error, Debug)]
 pub enum ActorError {
     #[error(transparent)]
