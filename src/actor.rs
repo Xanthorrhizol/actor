@@ -59,14 +59,15 @@ where
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
             let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
             let (restart_tx, mut restart_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 
-            if actor_system_tx
-                .send(ActorSystemCmd::Register(
+            let mut count = 0;
+            let result_rx = loop {
+                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                if let Err(e) = actor_system_tx.send(ActorSystemCmd::Register(
                     self.address().to_string(),
-                    tx,
-                    restart_tx,
-                    kill_tx,
+                    tx.clone(),
+                    restart_tx.clone(),
+                    kill_tx.clone(),
                     if restarted {
                         LifeCycle::Restarting
                     } else {
@@ -74,12 +75,15 @@ where
                     },
                     result_tx,
                     restarted,
-                ))
-                .is_err()
-            {
-                let _ = ready_tx.send(Err(ActorError::UnhealthyActorSystem));
-                return Err(ActorError::UnhealthyActorSystem);
-            }
+                )) {
+                    count += 1;
+                    if count > 10 {
+                        let _ = ready_tx.send(Err(ActorError::UnhealthyActorSystem));
+                        return Err(ActorError::UnhealthyActorSystem);
+                    }
+                }
+                break result_rx;
+            };
             match result_rx.await {
                 Ok(Err(e)) => {
                     let _ = ready_tx.send(Err(e));
