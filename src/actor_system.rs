@@ -310,14 +310,15 @@ impl ActorSystem {
 
     fn run(
         &mut self,
-        mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::task::spawn_blocking(actor_system_loop(handler_rx))
+        handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd>,
+    ) -> tokio::task::JoinHandle<impl Future<Output = ()>> {
+        let handle = tokio::task::spawn_blocking(async || actor_system_loop(handler_rx).await);
+        handle
     }
 }
 
 // {{{ fn actor_system_loop
-async fn actor_system_loop(handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd>) {
+async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd>) {
     let mut address_list = HashSet::<String>::new();
     let mut map = HashMap::<
         String,
