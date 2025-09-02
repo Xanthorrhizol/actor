@@ -41,7 +41,7 @@ impl Default for ActorSystem {
             handler_tx,
             blocking: true,
         };
-        me.run(handler_rx, true);
+        me.run(handler_rx);
         me
     }
 }
@@ -54,7 +54,7 @@ impl ActorSystem {
             handler_tx,
             blocking,
         };
-        me.run(handler_rx, blocking);
+        me.run(handler_rx);
         me
     }
 
@@ -339,15 +339,10 @@ impl ActorSystem {
     fn run(
         &mut self,
         handler_rx: tokio::sync::mpsc::UnboundedReceiver<ActorSystemCmd>,
-        blocking: bool,
     ) -> tokio::task::JoinHandle<()> {
-        let handle = if blocking {
-            tokio::task::spawn_blocking(|| {
-                tokio::runtime::Handle::current().block_on(actor_system_loop(handler_rx))
-            })
-        } else {
-            tokio::spawn(actor_system_loop(handler_rx))
-        };
+        let handle = tokio::task::spawn_blocking(|| {
+            tokio::runtime::Handle::current().block_on(actor_system_loop(handler_rx))
+        });
         handle
     }
 }
