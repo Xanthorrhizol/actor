@@ -14,7 +14,7 @@ $ cargo add serde --features=derive
 use xan_actor::ActorSystem;
 ...
 
-let mut actor_system = ActorSystem::new();
+let mut actor_system = ActorSystem::new(false);
 ```
 
 3. declare Actor to register
