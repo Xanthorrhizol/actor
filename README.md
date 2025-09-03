@@ -89,17 +89,17 @@ impl Actor for MyActor2 {
 let actor1 = MyActor1 {
     address: "/some/address/1/1".to_string(),
 };
-actor1.register(&mut actor_system).await;
+actor1.register(&mut actor_system, true).await;
 
 let actor2 = MyActor2 {
     address: "/some/address/2".to_string(),
 };
-actor2.register(&mut actor_system).await;
+actor2.register(&mut actor_system, false).await;
 
 let actor3 = MyActor1 {
     address: "/some/address/1/2".to_string(),
 };
-actor3.register(&mut actor_system).await;
+actor3.register(&mut actor_system, true).await;
 ```
 
 5. use it
