@@ -389,7 +389,8 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
                     }
                 };
                 for address in addresses {
-                    if let Some((_tx, restart_tx, _kill_tx, _life_cycle)) = map.get(&address) {
+                    if let Some((_tx, restart_tx, _kill_tx, life_cycle)) = map.get_mut(&address) {
+                        *life_cycle = LifeCycle::Restarting;
                         let _ = restart_tx.send(());
                     }
                 }
