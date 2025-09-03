@@ -31,16 +31,12 @@ pub enum ActorSystemCmd {
 /// It's clonable so that it can be shared across different parts of the application.
 pub struct ActorSystem {
     handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd>,
-    pub blocking: bool,
 }
 
 impl Default for ActorSystem {
     fn default() -> Self {
         let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut me = Self {
-            handler_tx,
-            blocking: true,
-        };
+        let mut me = Self { handler_tx };
         me.run(handler_rx);
         me
     }
@@ -48,12 +44,9 @@ impl Default for ActorSystem {
 
 impl ActorSystem {
     /// Creates a new ActorSystem instance
-    pub fn new(blocking: bool) -> Self {
+    pub fn new() -> Self {
         let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut me = Self {
-            handler_tx,
-            blocking,
-        };
+        let mut me = Self { handler_tx };
         me.run(handler_rx);
         me
     }
@@ -101,19 +94,33 @@ impl ActorSystem {
     where
         T: Actor,
     {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self
-            .handler_tx
-            .send(ActorSystemCmd::FindActor(address.clone(), tx));
-        if let Ok(Some((tx, ready))) = rx.await {
-            if ready {
-                let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, None))?;
-                Ok(())
+        let mut retry_count = 0;
+        loop {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = self
+                .handler_tx
+                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            if let Ok(Some((tx, ready))) = rx.await {
+                if ready {
+                    let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, None))?;
+                    return Ok(());
+                } else {
+                    retry_count += 1;
+                    debug!(
+                        "Actor {} not ready, retrying... ({}/10)",
+                        address, retry_count
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if retry_count < 10 {
+                        continue;
+                    } else {
+                        error!("Actor {} not ready after 10 retries, giving up", address);
+                        return Err(ActorError::ActorNotReady(address));
+                    }
+                }
             } else {
-                Err(ActorError::ActorNotReady(address))
+                return Err(ActorError::AddressNotFound(address));
             }
-        } else {
-            Err(ActorError::AddressNotFound(address))
         }
     }
 
@@ -140,31 +147,49 @@ impl ActorSystem {
             }
         };
         let mut result = Vec::new();
-        for address in addresses {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = self
-                .handler_tx
-                .send(ActorSystemCmd::FindActor(address.clone(), tx));
-            if let Ok(Some((tx, ready))) = rx.await {
-                if ready {
-                    match rmp_serde::to_vec(&msg) {
-                        Ok(x) => {
-                            let message = Message::new(x, None);
-                            result.push(
-                                tx.send(message)
-                                    .map(|_| ())
-                                    .map_err(|e| ActorError::UnboundedChannelSend(e)),
-                            );
+        for address in addresses.iter() {
+            let mut retry_count = 0;
+            loop {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let _ = self
+                    .handler_tx
+                    .send(ActorSystemCmd::FindActor(address.clone(), tx));
+                if let Ok(Some((tx, ready))) = rx.await {
+                    if ready {
+                        match rmp_serde::to_vec(&msg) {
+                            Ok(x) => {
+                                let message = Message::new(x, None);
+                                result.push(
+                                    tx.send(message)
+                                        .map(|_| ())
+                                        .map_err(|e| ActorError::UnboundedChannelSend(e)),
+                                );
+                                break;
+                            }
+                            Err(e) => {
+                                result.push(Err(ActorError::from(e)));
+                                break;
+                            }
                         }
-                        Err(e) => {
-                            result.push(Err(ActorError::from(e)));
+                    } else {
+                        retry_count += 1;
+                        debug!(
+                            "Actor {} not ready, retrying... ({}/10)",
+                            address, retry_count
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        if retry_count < 10 {
+                            continue;
+                        } else {
+                            error!("Actor {} not ready after 10 retries, giving up", address);
+                            result.push(Err(ActorError::ActorNotReady(address.clone())));
+                            break;
                         }
                     }
                 } else {
-                    result.push(Err(ActorError::ActorNotReady(address)));
+                    result.push(Err(ActorError::AddressNotFound(address.clone())));
+                    break;
                 }
-            } else {
-                result.push(Err(ActorError::AddressNotFound(address)));
             }
         }
         result
@@ -179,22 +204,36 @@ impl ActorSystem {
     where
         T: Actor,
     {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self
-            .handler_tx
-            .send(ActorSystemCmd::FindActor(address.clone(), tx));
-        if let Ok(Some((tx, ready))) = rx.await {
-            if ready {
-                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx)))?;
-                Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
-                    &result_rx.await?,
-                )?)
+        let mut retry_count = 0;
+        loop {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = self
+                .handler_tx
+                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            if let Ok(Some((tx, ready))) = rx.await {
+                if ready {
+                    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                    let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx)))?;
+                    return Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
+                        &result_rx.await?,
+                    )?);
+                } else {
+                    retry_count += 1;
+                    debug!(
+                        "Actor {} not ready, retrying... ({}/10)",
+                        address, retry_count
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if retry_count < 10 {
+                        continue;
+                    } else {
+                        error!("Actor {} not ready after 10 retries, giving up", address);
+                        return Err(ActorError::ActorNotReady(address));
+                    }
+                }
             } else {
-                Err(ActorError::ActorNotReady(address))
+                return Err(ActorError::AddressNotFound(address));
             }
-        } else {
-            Err(ActorError::AddressNotFound(address))
         }
     }
 
@@ -218,7 +257,7 @@ impl ActorSystem {
     where
         T: Actor,
     {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut retry_count = 0;
         let msg = match rmp_serde::to_vec(&msg) {
             Ok(msg) => msg,
             Err(e) => {
@@ -226,113 +265,123 @@ impl ActorSystem {
                 return Err(ActorError::from(e));
             }
         };
-        let _ = self
-            .handler_tx
-            .send(ActorSystemCmd::FindActor(address.clone(), tx));
-        if let Ok(Some((tx, ready))) = rx.await {
-            if ready {
-                let tx = tx.clone();
-                if subscribe {
-                    let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
-                    let msg = msg.clone();
-                    let _ = tokio::spawn(async move {
-                        let mut i = 0;
-                        if let Some(interval) = job.interval() {
-                            loop {
-                                if job.start_at() <= std::time::SystemTime::now() {
-                                    i += 1;
-                                    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                                    if let Err(e) =
-                                        tx.send(Message::new(msg.clone(), Some(result_tx)))
-                                    {
-                                        error!("Send message failed: {:?}", e);
-                                        drop(sub_tx);
-                                        return;
-                                    }
-                                    let result = match result_rx.await {
-                                        Ok(result) => result,
-                                        Err(e) => {
-                                            error!("Receive result failed: {:?}", e);
-                                            drop(sub_tx);
-                                            return;
-                                        }
-                                    };
-                                    let _ =
-                                        sub_tx.send(rmp_serde::from_slice::<<T as Actor>::Result>(
-                                            &result,
-                                        ));
-                                    tokio::time::sleep(interval).await;
-                                    if let Some(max_iter) = job.max_iter() {
-                                        if i >= max_iter {
-                                            drop(sub_tx);
-                                            return;
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            if job.start_at() <= std::time::SystemTime::now() {
-                                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                                let msg = match rmp_serde::to_vec(&msg) {
-                                    Ok(msg) => msg,
-                                    Err(e) => {
-                                        error!("Serialize message failed: {:?}", e);
-                                        drop(sub_tx);
-                                        return;
-                                    }
-                                };
-                                if let Err(e) = tx.send(Message::new(msg, Some(result_tx))) {
-                                    error!("Send message failed: {:?}", e);
-                                    return;
-                                }
-                                let result = match result_rx
-                                    .await
-                                    .map(|x| rmp_serde::from_slice::<<T as Actor>::Result>(&x))
-                                {
-                                    Ok(result) => result,
-                                    Err(e) => {
-                                        error!("Receive result failed: {:?}", e);
-                                        drop(sub_tx);
-                                        return;
-                                    }
-                                };
-                                let _ = sub_tx.send(result);
-                            }
-                        }
-                    });
-                    Ok(Some(sub_rx))
+        let tx = loop {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = self
+                .handler_tx
+                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            if let Ok(Some((tx, ready))) = rx.await {
+                if ready {
+                    break tx;
                 } else {
-                    let _ = tokio::spawn(async move {
-                        let mut i = 0;
-                        if let Some(interval) = job.interval() {
-                            loop {
-                                if job.start_at() <= std::time::SystemTime::now() {
-                                    i += 1;
-                                    if let Err(e) = tx.send(Message::new(msg.clone(), None)) {
-                                        error!("Send message failed: {:?}", e);
-                                        return;
-                                    }
-                                    tokio::time::sleep(interval).await;
-                                    if let Some(max_iter) = job.max_iter() {
-                                        if i >= max_iter {
-                                            return;
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            if job.start_at() <= std::time::SystemTime::now() {
-                                let _ = tx.send(Message::new(msg.clone(), None));
-                            }
-                        }
-                    });
-                    Ok(None)
+                    retry_count += 1;
+                    debug!(
+                        "Actor {} not ready, retrying... ({}/10)",
+                        address, retry_count
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if retry_count < 10 {
+                        continue;
+                    } else {
+                        error!("Actor {} not ready after 10 retries, giving up", address);
+                        return Err(ActorError::ActorNotReady(address));
+                    }
                 }
             } else {
-                Err(ActorError::ActorNotReady(address))
+                return Err(ActorError::AddressNotFound(address.clone()));
             }
+        };
+        if subscribe {
+            let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
+            let msg = msg.clone();
+            let _ = tokio::spawn(async move {
+                let mut i = 0;
+                if let Some(interval) = job.interval() {
+                    loop {
+                        if job.start_at() <= std::time::SystemTime::now() {
+                            i += 1;
+                            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                            if let Err(e) = tx.send(Message::new(msg.clone(), Some(result_tx))) {
+                                error!("Send message failed: {:?}", e);
+                                drop(sub_tx);
+                                return;
+                            }
+                            let result = match result_rx.await {
+                                Ok(result) => result,
+                                Err(e) => {
+                                    error!("Receive result failed: {:?}", e);
+                                    drop(sub_tx);
+                                    return;
+                                }
+                            };
+                            let _ =
+                                sub_tx.send(rmp_serde::from_slice::<<T as Actor>::Result>(&result));
+                            tokio::time::sleep(interval).await;
+                            if let Some(max_iter) = job.max_iter() {
+                                if i >= max_iter {
+                                    drop(sub_tx);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if job.start_at() <= std::time::SystemTime::now() {
+                        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                        let msg = match rmp_serde::to_vec(&msg) {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                error!("Serialize message failed: {:?}", e);
+                                drop(sub_tx);
+                                return;
+                            }
+                        };
+                        if let Err(e) = tx.send(Message::new(msg, Some(result_tx))) {
+                            error!("Send message failed: {:?}", e);
+                            return;
+                        }
+                        let result = match result_rx
+                            .await
+                            .map(|x| rmp_serde::from_slice::<<T as Actor>::Result>(&x))
+                        {
+                            Ok(result) => result,
+                            Err(e) => {
+                                error!("Receive result failed: {:?}", e);
+                                drop(sub_tx);
+                                return;
+                            }
+                        };
+                        let _ = sub_tx.send(result);
+                    }
+                }
+            });
+            return Ok(Some(sub_rx));
         } else {
-            Err(ActorError::AddressNotFound(address))
+            let _ = tokio::spawn(async move {
+                let mut i = 0;
+                if let Some(interval) = job.interval() {
+                    loop {
+                        if job.start_at() <= std::time::SystemTime::now() {
+                            i += 1;
+                            if let Err(e) = tx.send(Message::new(msg.clone(), None)) {
+                                error!("Send message failed: {:?}", e);
+                                return;
+                            }
+                            tokio::time::sleep(interval).await;
+                            if let Some(max_iter) = job.max_iter() {
+                                if i >= max_iter {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if job.start_at() <= std::time::SystemTime::now() {
+                        let _ = tx.send(Message::new(msg.clone(), None));
+                    }
+                }
+            });
+            return Ok(None);
         }
     }
 

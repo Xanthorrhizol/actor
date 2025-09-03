@@ -1,4 +1,4 @@
-use crate::{ActorError, ActorSystem, ActorSystemCmd, LifeCycle, Message};
+use crate::{ActorError, ActorSystem, ActorSystemCmd, Blocking, ErrorHandling, LifeCycle, Message};
 use std::error::Error;
 
 #[async_trait::async_trait]
@@ -48,7 +48,7 @@ where
     async fn run_actor(
         &mut self,
         actor_system_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd>,
-        kill_in_error: bool,
+        error_handling: ErrorHandling,
         ready_tx: tokio::sync::mpsc::UnboundedSender<Result<(), ActorError>>,
     ) -> Result<(), ActorError> {
         let mut restarted = false;
@@ -116,12 +116,20 @@ where
                         let msg_de = match rmp_serde::from_slice::<Self::Message>(msg.inner()) {
                             Ok(msg) => msg,
                             Err(e) => {
-                                if kill_in_error {
-                                    error!("Deserialize message failed: {:?}", e);
-                                    break Some(());
+                                match error_handling {
+                                    ErrorHandling::Resume => {
+                                        debug!("Deserialize message failed: {:?} ...Resume this actor", e);
+                                        continue;
+                                    }
+                                    ErrorHandling::Restart => {
+                                        debug!("Deserialize message failed: {:?} ...Restart this actor", e);
+                                        break None;
+                                    }
+                                    ErrorHandling::Stop => {
+                                        error!("Deserialize message failed: {:?} ...Stop this actor", e);
+                                        break Some(());
+                                    }
                                 }
-                                debug!("Deserialize message failed: {:?}", e);
-                                break None;
                             }
                         };
                         match self.actor(msg_de).await {
@@ -132,12 +140,20 @@ where
                                 }
                             }
                            Err(e) => {
-                                if kill_in_error {
-                                    error!("Handler's result has error: {:?}", e);
-                                    break Some(());
+                                match error_handling {
+                                    ErrorHandling::Resume => {
+                                        debug!("Handler's result has error: {:?} ...Resume this actor", e);
+                                        continue;
+                                    }
+                                    ErrorHandling::Restart => {
+                                        debug!("Handler's result has error: {:?} ...Restart this actor", e);
+                                        break None;
+                                    }
+                                    ErrorHandling::Stop => {
+                                        error!("Handler's result has error: {:?} ...Stop this actor", e);
+                                        break Some(());
+                                    }
                                 }
-                                debug!("Handler's result has error: {:?}", e);
-                                break None;
                            }
                        }
                     }
@@ -178,15 +194,16 @@ where
     async fn register(
         mut self,
         actor_system: &mut ActorSystem,
-        kill_in_error: bool,
+        error_handling: ErrorHandling,
+        blocking: Blocking,
     ) -> Result<(), ActorError> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let actor_system_tx = actor_system.handler_tx();
-        let _ = if actor_system.blocking {
+        let _ = if blocking == Blocking::Blocking {
             tokio::task::spawn_blocking(move || {
                 let result = tokio::runtime::Handle::current().block_on(self.run_actor(
                     actor_system_tx,
-                    kill_in_error,
+                    error_handling,
                     tx,
                 ));
                 if let Err(e) = result {
@@ -195,7 +212,7 @@ where
             })
         } else {
             tokio::spawn(async move {
-                let result = self.run_actor(actor_system_tx, kill_in_error, tx).await;
+                let result = self.run_actor(actor_system_tx, error_handling, tx).await;
                 if let Err(e) = result {
                     error!("Actor {} run failed: {:?}", self.address(), e);
                 }

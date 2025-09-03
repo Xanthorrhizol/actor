@@ -14,7 +14,7 @@ $ cargo add serde --features=derive
 use xan_actor::ActorSystem;
 ...
 
-let mut actor_system = ActorSystem::new(false);
+let mut actor_system = ActorSystem::new();
 ```
 
 3. declare Actor to register
@@ -86,20 +86,22 @@ impl Actor for MyActor2 {
 4. register actor into actor system
 
 ```rust
+use crate::xan_actor::{ErrorHandling, Blocking};
+
 let actor1 = MyActor1 {
     address: "/some/address/1/1".to_string(),
 };
-actor1.register(&mut actor_system, true).await;
+actor1.register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking).await;
 
 let actor2 = MyActor2 {
     address: "/some/address/2".to_string(),
 };
-actor2.register(&mut actor_system, false).await;
+actor2.register(&mut actor_system, ErrorHandling::Restart, Blocking::NonBlocking).await;
 
 let actor3 = MyActor1 {
     address: "/some/address/1/2".to_string(),
 };
-actor3.register(&mut actor_system, true).await;
+actor3.register(&mut actor_system, ErrorHandling::Resume, Blocking::Blocking).await;
 ```
 
 5. use it
