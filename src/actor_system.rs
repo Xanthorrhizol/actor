@@ -31,12 +31,16 @@ pub enum ActorSystemCmd {
 /// It's clonable so that it can be shared across different parts of the application.
 pub struct ActorSystem {
     handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd>,
+    cache: HashMap<String, tokio::sync::mpsc::UnboundedSender<Message>>,
 }
 
 impl Default for ActorSystem {
     fn default() -> Self {
         let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut me = Self { handler_tx };
+        let mut me = Self {
+            handler_tx,
+            cache: HashMap::new(),
+        };
         me.run(handler_rx);
         me
     }
@@ -46,7 +50,10 @@ impl ActorSystem {
     /// Creates a new ActorSystem instance
     pub fn new() -> Self {
         let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut me = Self { handler_tx };
+        let mut me = Self {
+            handler_tx,
+            cache: HashMap::new(),
+        };
         me.run(handler_rx);
         me
     }
@@ -87,7 +94,7 @@ impl ActorSystem {
     /// Send a message to a specific actor by its address.
     /// It doesn't wait for the actor to be ready.
     pub async fn send<T>(
-        &self,
+        &mut self,
         address: String,
         msg: <T as Actor>::Message,
     ) -> Result<(), ActorError>
@@ -97,11 +104,32 @@ impl ActorSystem {
         let mut retry_count = 0;
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
+            match self.cache.entry(address.clone()) {
+                std::collections::hash_map::Entry::Occupied(o) => {
+                    let tx = o.get();
+                    match tx.send(Message::new(rmp_serde::to_vec(&msg)?, None)) {
+                        Ok(_) => {
+                            debug!("Send message to actor {} through cached_tx succeeded", address);
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Send message to actor {} through cached_tx failed: {:?} ... removing from cache",
+                                address, e
+                            );
+                            self.cache.remove(&address);
+                        }
+                    }
+                }
+                _ => {}
+            }
             let _ = self
                 .handler_tx
                 .send(ActorSystemCmd::FindActor(address.clone(), tx));
             if let Ok(Some((tx, ready))) = rx.await {
                 if ready {
+                    debug!("Saving actor {} tx to cache", address);
+                    self.cache.insert(address.clone(), tx.clone());
                     let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, None))?;
                     return Ok(());
                 } else {
@@ -128,7 +156,7 @@ impl ActorSystem {
     /// It returns a vector of results, success or error for each actor.
     /// It doesn't returns results from the actors, only whether the message was sent successfully or not.
     pub async fn send_broadcast<T>(
-        &self,
+        &mut self,
         address_regex: String,
         msg: <T as Actor>::Message,
     ) -> Vec<Result<(), ActorError>>
@@ -148,6 +176,35 @@ impl ActorSystem {
         };
         let mut result = Vec::new();
         for address in addresses.iter() {
+            match self.cache.entry(address.clone()) {
+                std::collections::hash_map::Entry::Occupied(o) => {
+                    let tx = o.get();
+                    let message = match rmp_serde::to_vec(&msg) {
+                        Ok(x) => {
+                            debug!("Send message to actor {} through cached_tx succeeded", address);
+                            Message::new(x, None)
+                        }
+                        Err(e) => {
+                            result.push(Err(ActorError::from(e)));
+                            break;
+                        }
+                    };
+                    match tx.send(message) {
+                        Ok(_) => {
+                            result.push(Ok(()));
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Send message to actor {} through cached_tx failed: {:?} ... removing from cache",
+                                address, e
+                            );
+                            self.cache.remove(address);
+                        }
+                    }
+                }
+                _ => {}
+            }
             let mut retry_count = 0;
             loop {
                 let (tx, rx) = tokio::sync::oneshot::channel();
@@ -156,6 +213,8 @@ impl ActorSystem {
                     .send(ActorSystemCmd::FindActor(address.clone(), tx));
                 if let Ok(Some((tx, ready))) = rx.await {
                     if ready {
+                    debug!("Saving actor {} tx to cache", address);
+                        self.cache.insert(address.clone(), tx.clone());
                         match rmp_serde::to_vec(&msg) {
                             Ok(x) => {
                                 let message = Message::new(x, None);
@@ -197,7 +256,7 @@ impl ActorSystem {
 
     /// Sends a message to a specific actor and waits for the result.
     pub async fn send_and_recv<T>(
-        &self,
+        &mut self,
         address: String,
         msg: <T as Actor>::Message,
     ) -> Result<<T as Actor>::Result, ActorError>
@@ -206,12 +265,36 @@ impl ActorSystem {
     {
         let mut retry_count = 0;
         loop {
+            match self.cache.entry(address.clone()) {
+                std::collections::hash_map::Entry::Occupied(o) => {
+                    let tx = o.get();
+                    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                    match tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx))) {
+                        Ok(_) => {
+                            debug!("Send message to actor {} through cached_tx succeeded", address);
+                            return Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
+                                &result_rx.await?,
+                            )?);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Send message to actor {} through cached_tx failed: {:?} ... removing from cache",
+                                address, e
+                            );
+                            self.cache.remove(&address);
+                        }
+                    }
+                }
+                _ => {}
+            }
             let (tx, rx) = tokio::sync::oneshot::channel();
             let _ = self
                 .handler_tx
                 .send(ActorSystemCmd::FindActor(address.clone(), tx));
             if let Ok(Some((tx, ready))) = rx.await {
                 if ready {
+                    debug!("Saving actor {} tx to cache", address);
+                    self.cache.insert(address.clone(), tx.clone());
                     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                     let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx)))?;
                     return Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
@@ -241,7 +324,7 @@ impl ActorSystem {
     /// If you want to subscribe to the results, set `subscribe` to true.
     /// It returns a receiver that you can use to receive the results.
     pub async fn run_job<T>(
-        &self,
+        &mut self,
         address: String,
         subscribe: bool,
         job: JobSpec,
@@ -272,6 +355,8 @@ impl ActorSystem {
                 .send(ActorSystemCmd::FindActor(address.clone(), tx));
             if let Ok(Some((tx, ready))) = rx.await {
                 if ready {
+                    debug!("Saving actor {} tx to cache", address);
+                    self.cache.insert(address.clone(), tx.clone());
                     break tx;
                 } else {
                     retry_count += 1;

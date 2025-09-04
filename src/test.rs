@@ -130,7 +130,7 @@ async fn test() {
     // restart actor
     actor_system.restart("/some/address/1/*".to_string() /* address as regex */);
 
-    let actor_system_move = actor_system.clone();
+    let mut actor_system_move = actor_system.clone();
     tokio::spawn(async move {
         actor_system_move
             .send_and_recv::<MyActor1>(
