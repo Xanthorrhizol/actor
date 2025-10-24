@@ -109,7 +109,10 @@ impl ActorSystem {
                     let tx = o.get();
                     match tx.send(Message::new(rmp_serde::to_vec(&msg)?, None)) {
                         Ok(_) => {
-                            debug!("Send message to actor {} through cached_tx succeeded", address);
+                            debug!(
+                                "Send message to actor {} through cached_tx succeeded",
+                                address
+                            );
                             return Ok(());
                         }
                         Err(e) => {
@@ -130,6 +133,47 @@ impl ActorSystem {
                 if ready {
                     debug!("Saving actor {} tx to cache", address);
                     self.cache.insert(address.clone(), tx.clone());
+                    let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, None))?;
+                    return Ok(());
+                } else {
+                    retry_count += 1;
+                    debug!(
+                        "Actor {} not ready, retrying... ({}/10)",
+                        address, retry_count
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if retry_count < 10 {
+                        continue;
+                    } else {
+                        error!("Actor {} not ready after 10 retries, giving up", address);
+                        return Err(ActorError::ActorNotReady(address));
+                    }
+                }
+            } else {
+                return Err(ActorError::AddressNotFound(address));
+            }
+        }
+    }
+
+    /// Send a message to a specific actor by its address.
+    /// It doesn't wait for the actor to be ready.
+    /// It doesn't cache the actor's tx for future use.
+    pub async fn send_without_tx_cache<T>(
+        &self,
+        address: String,
+        msg: <T as Actor>::Message,
+    ) -> Result<(), ActorError>
+    where
+        T: Actor,
+    {
+        let mut retry_count = 0;
+        loop {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = self
+                .handler_tx
+                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            if let Ok(Some((tx, ready))) = rx.await {
+                if ready {
                     let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, None))?;
                     return Ok(());
                 } else {
@@ -181,7 +225,10 @@ impl ActorSystem {
                     let tx = o.get();
                     let message = match rmp_serde::to_vec(&msg) {
                         Ok(x) => {
-                            debug!("Send message to actor {} through cached_tx succeeded", address);
+                            debug!(
+                                "Send message to actor {} through cached_tx succeeded",
+                                address
+                            );
                             Message::new(x, None)
                         }
                         Err(e) => {
@@ -213,8 +260,80 @@ impl ActorSystem {
                     .send(ActorSystemCmd::FindActor(address.clone(), tx));
                 if let Ok(Some((tx, ready))) = rx.await {
                     if ready {
-                    debug!("Saving actor {} tx to cache", address);
+                        debug!("Saving actor {} tx to cache", address);
                         self.cache.insert(address.clone(), tx.clone());
+                        match rmp_serde::to_vec(&msg) {
+                            Ok(x) => {
+                                let message = Message::new(x, None);
+                                result.push(
+                                    tx.send(message)
+                                        .map(|_| ())
+                                        .map_err(|e| ActorError::UnboundedChannelSend(e)),
+                                );
+                                break;
+                            }
+                            Err(e) => {
+                                result.push(Err(ActorError::from(e)));
+                                break;
+                            }
+                        }
+                    } else {
+                        retry_count += 1;
+                        debug!(
+                            "Actor {} not ready, retrying... ({}/10)",
+                            address, retry_count
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        if retry_count < 10 {
+                            continue;
+                        } else {
+                            error!("Actor {} not ready after 10 retries, giving up", address);
+                            result.push(Err(ActorError::ActorNotReady(address.clone())));
+                            break;
+                        }
+                    }
+                } else {
+                    result.push(Err(ActorError::AddressNotFound(address.clone())));
+                    break;
+                }
+            }
+        }
+        result
+    }
+
+    /// Sends a message to all actors that match the given address regex.
+    /// It returns a vector of results, success or error for each actor.
+    /// It doesn't returns results from the actors, only whether the message was sent successfully or not.
+    /// It doesn't cache the actor's tx for future use.
+    pub async fn send_broadcast_without_tx_cache<T>(
+        &self,
+        address_regex: String,
+        msg: <T as Actor>::Message,
+    ) -> Vec<Result<(), ActorError>>
+    where
+        T: Actor,
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .handler_tx
+            .send(ActorSystemCmd::FilterAddress(address_regex, tx));
+        let addresses = match rx.await {
+            Ok(addresses) => addresses,
+            Err(e) => {
+                error!("Receive address list failed: {:?}", e);
+                return vec![Err(ActorError::from(e))];
+            }
+        };
+        let mut result = Vec::new();
+        for address in addresses.iter() {
+            let mut retry_count = 0;
+            loop {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let _ = self
+                    .handler_tx
+                    .send(ActorSystemCmd::FindActor(address.clone(), tx));
+                if let Ok(Some((tx, ready))) = rx.await {
+                    if ready {
                         match rmp_serde::to_vec(&msg) {
                             Ok(x) => {
                                 let message = Message::new(x, None);
@@ -271,7 +390,10 @@ impl ActorSystem {
                     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                     match tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx))) {
                         Ok(_) => {
-                            debug!("Send message to actor {} through cached_tx succeeded", address);
+                            debug!(
+                                "Send message to actor {} through cached_tx succeeded",
+                                address
+                            );
                             return Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
                                 &result_rx.await?,
                             )?);
@@ -295,6 +417,49 @@ impl ActorSystem {
                 if ready {
                     debug!("Saving actor {} tx to cache", address);
                     self.cache.insert(address.clone(), tx.clone());
+                    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                    let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx)))?;
+                    return Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
+                        &result_rx.await?,
+                    )?);
+                } else {
+                    retry_count += 1;
+                    debug!(
+                        "Actor {} not ready, retrying... ({}/10)",
+                        address, retry_count
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if retry_count < 10 {
+                        continue;
+                    } else {
+                        error!("Actor {} not ready after 10 retries, giving up", address);
+                        return Err(ActorError::ActorNotReady(address));
+                    }
+                }
+            } else {
+                return Err(ActorError::AddressNotFound(address));
+            }
+        }
+    }
+
+    /// Sends a message to a specific actor and waits for the result.
+    /// It doesn't cache the actor's tx for future use.
+    pub async fn send_and_recv_without_tx_cache<T>(
+        &self,
+        address: String,
+        msg: <T as Actor>::Message,
+    ) -> Result<<T as Actor>::Result, ActorError>
+    where
+        T: Actor,
+    {
+        let mut retry_count = 0;
+        loop {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = self
+                .handler_tx
+                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            if let Ok(Some((tx, ready))) = rx.await {
+                if ready {
                     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                     let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx)))?;
                     return Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
@@ -357,6 +522,155 @@ impl ActorSystem {
                 if ready {
                     debug!("Saving actor {} tx to cache", address);
                     self.cache.insert(address.clone(), tx.clone());
+                    break tx;
+                } else {
+                    retry_count += 1;
+                    debug!(
+                        "Actor {} not ready, retrying... ({}/10)",
+                        address, retry_count
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if retry_count < 10 {
+                        continue;
+                    } else {
+                        error!("Actor {} not ready after 10 retries, giving up", address);
+                        return Err(ActorError::ActorNotReady(address));
+                    }
+                }
+            } else {
+                return Err(ActorError::AddressNotFound(address.clone()));
+            }
+        };
+        if subscribe {
+            let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
+            let msg = msg.clone();
+            let _ = tokio::spawn(async move {
+                let mut i = 0;
+                if let Some(interval) = job.interval() {
+                    loop {
+                        if job.start_at() <= std::time::SystemTime::now() {
+                            i += 1;
+                            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                            if let Err(e) = tx.send(Message::new(msg.clone(), Some(result_tx))) {
+                                error!("Send message failed: {:?}", e);
+                                drop(sub_tx);
+                                return;
+                            }
+                            let result = match result_rx.await {
+                                Ok(result) => result,
+                                Err(e) => {
+                                    error!("Receive result failed: {:?}", e);
+                                    drop(sub_tx);
+                                    return;
+                                }
+                            };
+                            let _ =
+                                sub_tx.send(rmp_serde::from_slice::<<T as Actor>::Result>(&result));
+                            tokio::time::sleep(interval).await;
+                            if let Some(max_iter) = job.max_iter() {
+                                if i >= max_iter {
+                                    drop(sub_tx);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if job.start_at() <= std::time::SystemTime::now() {
+                        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                        let msg = match rmp_serde::to_vec(&msg) {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                error!("Serialize message failed: {:?}", e);
+                                drop(sub_tx);
+                                return;
+                            }
+                        };
+                        if let Err(e) = tx.send(Message::new(msg, Some(result_tx))) {
+                            error!("Send message failed: {:?}", e);
+                            return;
+                        }
+                        let result = match result_rx
+                            .await
+                            .map(|x| rmp_serde::from_slice::<<T as Actor>::Result>(&x))
+                        {
+                            Ok(result) => result,
+                            Err(e) => {
+                                error!("Receive result failed: {:?}", e);
+                                drop(sub_tx);
+                                return;
+                            }
+                        };
+                        let _ = sub_tx.send(result);
+                    }
+                }
+            });
+            return Ok(Some(sub_rx));
+        } else {
+            let _ = tokio::spawn(async move {
+                let mut i = 0;
+                if let Some(interval) = job.interval() {
+                    loop {
+                        if job.start_at() <= std::time::SystemTime::now() {
+                            i += 1;
+                            if let Err(e) = tx.send(Message::new(msg.clone(), None)) {
+                                error!("Send message failed: {:?}", e);
+                                return;
+                            }
+                            tokio::time::sleep(interval).await;
+                            if let Some(max_iter) = job.max_iter() {
+                                if i >= max_iter {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if job.start_at() <= std::time::SystemTime::now() {
+                        let _ = tx.send(Message::new(msg.clone(), None));
+                    }
+                }
+            });
+            return Ok(None);
+        }
+    }
+
+    /// Runs a job with the specified actor and message.
+    /// If you want to subscribe to the results, set `subscribe` to true.
+    /// It returns a receiver that you can use to receive the results.
+    /// It doesn't cache the actor's tx for future use.
+    pub async fn run_job_without_tx_cache<T>(
+        &self,
+        address: String,
+        subscribe: bool,
+        job: JobSpec,
+        msg: <T as Actor>::Message,
+    ) -> Result<
+        Option<
+            tokio::sync::mpsc::UnboundedReceiver<
+                Result<<T as Actor>::Result, rmp_serde::decode::Error>,
+            >,
+        >,
+        ActorError,
+    >
+    where
+        T: Actor,
+    {
+        let mut retry_count = 0;
+        let msg = match rmp_serde::to_vec(&msg) {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!("Serialize message failed: {:?}", e);
+                return Err(ActorError::from(e));
+            }
+        };
+        let tx = loop {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = self
+                .handler_tx
+                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            if let Ok(Some((tx, ready))) = rx.await {
+                if ready {
                     break tx;
                 } else {
                     retry_count += 1;
