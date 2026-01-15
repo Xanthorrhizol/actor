@@ -1,6 +1,7 @@
 pub mod actor;
 pub mod actor_system;
 mod error;
+pub mod prelude;
 #[cfg(test)]
 mod test;
 pub mod types;
