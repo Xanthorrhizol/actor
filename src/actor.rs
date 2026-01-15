@@ -1,5 +1,4 @@
 use crate::{ActorError, ActorSystem, ActorSystemCmd, Blocking, ErrorHandling, LifeCycle, Message};
-use std::error::Error;
 
 #[async_trait::async_trait]
 /// Trait for actors in the actor system
@@ -21,7 +20,7 @@ where
     type Result: Sized + Send + serde::Serialize + serde::de::DeserializeOwned;
 
     /// The error type that the actor can return.
-    type Error: Error + Send;
+    type Error: std::fmt::Debug + std::fmt::Display + Send;
 
     /// The address of the actor, which is a unique identifier for the actor in the actor system.
     fn address(&self) -> &str;
