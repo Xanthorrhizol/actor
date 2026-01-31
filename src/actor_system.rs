@@ -1,5 +1,6 @@
 use crate::{Actor, ActorError, JobSpec, LifeCycle, Message};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Commands for the ActorSystem to handle various operations
 /// You can send these commands to the ActorSystem's handler channel directly.
@@ -102,12 +103,13 @@ impl ActorSystem {
         T: Actor,
     {
         let mut retry_count = 0;
+        let payload: Arc<[u8]> = rmp_serde::to_vec(&msg)?.into();
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
             match self.cache.entry(address.clone()) {
                 std::collections::hash_map::Entry::Occupied(o) => {
                     let tx = o.get();
-                    match tx.send(Message::new(rmp_serde::to_vec(&msg)?, None)) {
+                    match tx.send(Message::new(payload.clone(), None)) {
                         Ok(_) => {
                             debug!(
                                 "Send message to actor {} through cached_tx succeeded",
@@ -133,7 +135,7 @@ impl ActorSystem {
                 if ready {
                     debug!("Saving actor {} tx to cache", address);
                     self.cache.insert(address.clone(), tx.clone());
-                    let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, None))?;
+                    let _ = tx.send(Message::new(payload.clone(), None))?;
                     return Ok(());
                 } else {
                     retry_count += 1;
@@ -167,6 +169,7 @@ impl ActorSystem {
         T: Actor,
     {
         let mut retry_count = 0;
+        let payload: Arc<[u8]> = rmp_serde::to_vec(&msg)?.into();
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let _ = self
@@ -174,7 +177,7 @@ impl ActorSystem {
                 .send(ActorSystemCmd::FindActor(address.clone(), tx));
             if let Ok(Some((tx, ready))) = rx.await {
                 if ready {
-                    let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, None))?;
+                    let _ = tx.send(Message::new(payload.clone(), None))?;
                     return Ok(());
                 } else {
                     retry_count += 1;
@@ -218,24 +221,22 @@ impl ActorSystem {
                 return vec![Err(ActorError::from(e))];
             }
         };
+        let payload: Arc<[u8]> = match rmp_serde::to_vec(&msg) {
+            Ok(x) => x.into(),
+            Err(e) => {
+                return vec![Err(ActorError::from(e))];
+            }
+        };
         let mut result = Vec::new();
         for address in addresses.iter() {
             match self.cache.entry(address.clone()) {
                 std::collections::hash_map::Entry::Occupied(o) => {
                     let tx = o.get();
-                    let message = match rmp_serde::to_vec(&msg) {
-                        Ok(x) => {
-                            debug!(
-                                "Send message to actor {} through cached_tx succeeded",
-                                address
-                            );
-                            Message::new(x, None)
-                        }
-                        Err(e) => {
-                            result.push(Err(ActorError::from(e)));
-                            break;
-                        }
-                    };
+                    debug!(
+                        "Send message to actor {} through cached_tx succeeded",
+                        address
+                    );
+                    let message = Message::new(payload.clone(), None);
                     match tx.send(message) {
                         Ok(_) => {
                             result.push(Ok(()));
@@ -262,21 +263,13 @@ impl ActorSystem {
                     if ready {
                         debug!("Saving actor {} tx to cache", address);
                         self.cache.insert(address.clone(), tx.clone());
-                        match rmp_serde::to_vec(&msg) {
-                            Ok(x) => {
-                                let message = Message::new(x, None);
-                                result.push(
-                                    tx.send(message)
-                                        .map(|_| ())
-                                        .map_err(|e| ActorError::UnboundedChannelSend(e)),
-                                );
-                                break;
-                            }
-                            Err(e) => {
-                                result.push(Err(ActorError::from(e)));
-                                break;
-                            }
-                        }
+                        let message = Message::new(payload.clone(), None);
+                        result.push(
+                            tx.send(message)
+                                .map(|_| ())
+                                .map_err(|e| ActorError::UnboundedChannelSend(e)),
+                        );
+                        break;
                     } else {
                         retry_count += 1;
                         debug!(
@@ -324,6 +317,12 @@ impl ActorSystem {
                 return vec![Err(ActorError::from(e))];
             }
         };
+        let payload: Arc<[u8]> = match rmp_serde::to_vec(&msg) {
+            Ok(x) => x.into(),
+            Err(e) => {
+                return vec![Err(ActorError::from(e))];
+            }
+        };
         let mut result = Vec::new();
         for address in addresses.iter() {
             let mut retry_count = 0;
@@ -334,21 +333,13 @@ impl ActorSystem {
                     .send(ActorSystemCmd::FindActor(address.clone(), tx));
                 if let Ok(Some((tx, ready))) = rx.await {
                     if ready {
-                        match rmp_serde::to_vec(&msg) {
-                            Ok(x) => {
-                                let message = Message::new(x, None);
-                                result.push(
-                                    tx.send(message)
-                                        .map(|_| ())
-                                        .map_err(|e| ActorError::UnboundedChannelSend(e)),
-                                );
-                                break;
-                            }
-                            Err(e) => {
-                                result.push(Err(ActorError::from(e)));
-                                break;
-                            }
-                        }
+                        let message = Message::new(payload.clone(), None);
+                        result.push(
+                            tx.send(message)
+                                .map(|_| ())
+                                .map_err(|e| ActorError::UnboundedChannelSend(e)),
+                        );
+                        break;
                     } else {
                         retry_count += 1;
                         debug!(
@@ -382,13 +373,14 @@ impl ActorSystem {
     where
         T: Actor,
     {
+        let payload: Arc<[u8]> = rmp_serde::to_vec(&msg)?.into();
         let mut retry_count = 0;
         loop {
             match self.cache.entry(address.clone()) {
                 std::collections::hash_map::Entry::Occupied(o) => {
                     let tx = o.get();
                     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                    match tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx))) {
+                    match tx.send(Message::new(payload.clone(), Some(result_tx))) {
                         Ok(_) => {
                             debug!(
                                 "Send message to actor {} through cached_tx succeeded",
@@ -418,7 +410,7 @@ impl ActorSystem {
                     debug!("Saving actor {} tx to cache", address);
                     self.cache.insert(address.clone(), tx.clone());
                     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                    let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx)))?;
+                    let _ = tx.send(Message::new(payload.clone(), Some(result_tx)))?;
                     return Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
                         &result_rx.await?,
                     )?);
@@ -452,6 +444,7 @@ impl ActorSystem {
     where
         T: Actor,
     {
+        let payload: Arc<[u8]> = rmp_serde::to_vec(&msg)?.into();
         let mut retry_count = 0;
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -461,7 +454,7 @@ impl ActorSystem {
             if let Ok(Some((tx, ready))) = rx.await {
                 if ready {
                     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                    let _ = tx.send(Message::new(rmp_serde::to_vec(&msg)?, Some(result_tx)))?;
+                    let _ = tx.send(Message::new(payload.clone(), Some(result_tx)))?;
                     return Ok(rmp_serde::from_slice::<<T as Actor>::Result>(
                         &result_rx.await?,
                     )?);
@@ -506,8 +499,8 @@ impl ActorSystem {
         T: Actor,
     {
         let mut retry_count = 0;
-        let msg = match rmp_serde::to_vec(&msg) {
-            Ok(msg) => msg,
+        let payload: Arc<[u8]> = match rmp_serde::to_vec(&msg) {
+            Ok(msg) => msg.into(),
             Err(e) => {
                 error!("Serialize message failed: {:?}", e);
                 return Err(ActorError::from(e));
@@ -543,7 +536,7 @@ impl ActorSystem {
         };
         if subscribe {
             let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
-            let msg = msg.clone();
+            let payload = payload.clone();
             let _ = tokio::spawn(async move {
                 let mut i = 0;
                 if let Some(interval) = job.interval() {
@@ -551,7 +544,8 @@ impl ActorSystem {
                         if job.start_at() <= std::time::SystemTime::now() {
                             i += 1;
                             let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                            if let Err(e) = tx.send(Message::new(msg.clone(), Some(result_tx))) {
+                            if let Err(e) = tx.send(Message::new(payload.clone(), Some(result_tx)))
+                            {
                                 error!("Send message failed: {:?}", e);
                                 drop(sub_tx);
                                 return;
@@ -578,15 +572,7 @@ impl ActorSystem {
                 } else {
                     if job.start_at() <= std::time::SystemTime::now() {
                         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                        let msg = match rmp_serde::to_vec(&msg) {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                error!("Serialize message failed: {:?}", e);
-                                drop(sub_tx);
-                                return;
-                            }
-                        };
-                        if let Err(e) = tx.send(Message::new(msg, Some(result_tx))) {
+                        if let Err(e) = tx.send(Message::new(payload.clone(), Some(result_tx))) {
                             error!("Send message failed: {:?}", e);
                             return;
                         }
@@ -613,7 +599,7 @@ impl ActorSystem {
                     loop {
                         if job.start_at() <= std::time::SystemTime::now() {
                             i += 1;
-                            if let Err(e) = tx.send(Message::new(msg.clone(), None)) {
+                            if let Err(e) = tx.send(Message::new(payload.clone(), None)) {
                                 error!("Send message failed: {:?}", e);
                                 return;
                             }
@@ -627,7 +613,7 @@ impl ActorSystem {
                     }
                 } else {
                     if job.start_at() <= std::time::SystemTime::now() {
-                        let _ = tx.send(Message::new(msg.clone(), None));
+                        let _ = tx.send(Message::new(payload.clone(), None));
                     }
                 }
             });
@@ -657,8 +643,8 @@ impl ActorSystem {
         T: Actor,
     {
         let mut retry_count = 0;
-        let msg = match rmp_serde::to_vec(&msg) {
-            Ok(msg) => msg,
+        let payload: Arc<[u8]> = match rmp_serde::to_vec(&msg) {
+            Ok(msg) => msg.into(),
             Err(e) => {
                 error!("Serialize message failed: {:?}", e);
                 return Err(ActorError::from(e));
@@ -692,7 +678,7 @@ impl ActorSystem {
         };
         if subscribe {
             let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
-            let msg = msg.clone();
+            let payload = payload.clone();
             let _ = tokio::spawn(async move {
                 let mut i = 0;
                 if let Some(interval) = job.interval() {
@@ -700,7 +686,8 @@ impl ActorSystem {
                         if job.start_at() <= std::time::SystemTime::now() {
                             i += 1;
                             let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                            if let Err(e) = tx.send(Message::new(msg.clone(), Some(result_tx))) {
+                            if let Err(e) = tx.send(Message::new(payload.clone(), Some(result_tx)))
+                            {
                                 error!("Send message failed: {:?}", e);
                                 drop(sub_tx);
                                 return;
@@ -727,15 +714,7 @@ impl ActorSystem {
                 } else {
                     if job.start_at() <= std::time::SystemTime::now() {
                         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                        let msg = match rmp_serde::to_vec(&msg) {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                error!("Serialize message failed: {:?}", e);
-                                drop(sub_tx);
-                                return;
-                            }
-                        };
-                        if let Err(e) = tx.send(Message::new(msg, Some(result_tx))) {
+                        if let Err(e) = tx.send(Message::new(payload.clone(), Some(result_tx))) {
                             error!("Send message failed: {:?}", e);
                             return;
                         }
@@ -762,7 +741,7 @@ impl ActorSystem {
                     loop {
                         if job.start_at() <= std::time::SystemTime::now() {
                             i += 1;
-                            if let Err(e) = tx.send(Message::new(msg.clone(), None)) {
+                            if let Err(e) = tx.send(Message::new(payload.clone(), None)) {
                                 error!("Send message failed: {:?}", e);
                                 return;
                             }
@@ -776,7 +755,7 @@ impl ActorSystem {
                     }
                 } else {
                     if job.start_at() <= std::time::SystemTime::now() {
-                        let _ = tx.send(Message::new(msg.clone(), None));
+                        let _ = tx.send(Message::new(payload.clone(), None));
                     }
                 }
             });

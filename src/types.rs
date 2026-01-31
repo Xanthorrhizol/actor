@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 #[derive(Debug)]
 /// A message that can be sent to a worker thread.
 /// > You don't need to implement this trait.
@@ -5,7 +7,7 @@
 /// This message contains the data to be processed and an result channel.
 /// The result channel is used to send the result back to the sender.
 pub struct Message {
-    inner: Vec<u8>,
+    inner: Arc<[u8]>,
     result_tx: Option<tokio::sync::oneshot::Sender<Vec<u8>>>,
 }
 impl Clone for Message {
@@ -18,11 +20,14 @@ impl Clone for Message {
 }
 
 impl Message {
-    pub fn new(inner: Vec<u8>, result_tx: Option<tokio::sync::oneshot::Sender<Vec<u8>>>) -> Self {
+    pub fn new(
+        inner: Arc<[u8]>,
+        result_tx: Option<tokio::sync::oneshot::Sender<Vec<u8>>>,
+    ) -> Self {
         Self { inner, result_tx }
     }
 
-    pub fn inner(&self) -> &Vec<u8> {
+    pub fn inner(&self) -> &[u8] {
         &self.inner
     }
 
