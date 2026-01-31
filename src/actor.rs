@@ -1,4 +1,8 @@
-use crate::{ActorError, ActorSystem, ActorSystemCmd, Blocking, ErrorHandling, LifeCycle, Message};
+use crate::{
+    ActorError, ActorSystem, ActorSystemCmd, Blocking, ErrorHandling, LifeCycle, Message,
+    TypedMailbox,
+};
+use std::sync::Arc;
 
 #[async_trait::async_trait]
 /// Trait for actors in the actor system
@@ -11,13 +15,13 @@ use crate::{ActorError, ActorSystem, ActorSystemCmd, Blocking, ErrorHandling, Li
 /// Actors can be registered with the actor system using the `register` method, which will start the actor and handle its lifecycle.
 pub trait Actor
 where
-    Self: Sized + 'static,
+    Self: Sized + Send + Sync + 'static,
 {
     /// The message type that the actor can handle.
-    type Message: Sized + Send + serde::Serialize + serde::de::DeserializeOwned;
+    type Message: std::fmt::Debug + Sized + Send + Sync + 'static;
 
     /// The result type that the actor returns after processing a message.
-    type Result: Sized + Send + serde::Serialize + serde::de::DeserializeOwned;
+    type Result: std::fmt::Debug + Sized + Send + 'static;
 
     /// The error type that the actor can return.
     type Error: std::fmt::Debug + std::fmt::Display + Send;
@@ -26,7 +30,7 @@ where
     fn address(&self) -> &str;
 
     /// Handles incoming messages sent to the actor.
-    async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error>;
+    async fn actor(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error>;
 
     /// Pre-start hook that is called before the actor starts processing messages.
     async fn pre_start(&mut self) {}
@@ -55,16 +59,17 @@ where
             if restarted {
                 self.post_restart().await;
             }
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message<Self>>();
             let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
             let (restart_tx, mut restart_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+            let mailbox = Arc::new(TypedMailbox::<Self>::new(tx.clone()));
 
             let mut count = 0;
             let result_rx = loop {
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                 if let Err(e) = actor_system_tx.send(ActorSystemCmd::Register(
                     self.address().to_string(),
-                    tx.clone(),
+                    mailbox.clone(),
                     restart_tx.clone(),
                     kill_tx.clone(),
                     if restarted {
@@ -112,29 +117,10 @@ where
                 tokio::select! {
                     Some(mut msg) = rx.recv() => {
                         let result_tx = msg.result_tx();
-                        let msg_de = match rmp_serde::from_slice::<Self::Message>(msg.inner()) {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                match error_handling {
-                                    ErrorHandling::Resume => {
-                                        debug!("Deserialize message failed: {:?} ...Resume this actor", e);
-                                        continue;
-                                    }
-                                    ErrorHandling::Restart => {
-                                        debug!("Deserialize message failed: {:?} ...Restart this actor", e);
-                                        break None;
-                                    }
-                                    ErrorHandling::Stop => {
-                                        error!("Deserialize message failed: {:?} ...Stop this actor", e);
-                                        break Some(());
-                                    }
-                                }
-                            }
-                        };
+                        let msg_de = msg.inner();
                         match self.actor(msg_de).await {
                            Ok(result) => {
                                 if let Some(result_tx) = result_tx {
-                                    let result = rmp_serde::to_vec(&result)?;
                                     let _ = result_tx.send(result);
                                 }
                             }

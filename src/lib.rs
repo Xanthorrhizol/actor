@@ -6,10 +6,11 @@ pub mod prelude;
 mod test;
 pub mod types;
 
-pub use crate::error::ActorError;
-pub use crate::types::{JobSpec, Message};
 pub use actor::*;
 pub use actor_system::*;
+pub use error::ActorError;
+pub use types::{JobSpec, Message};
+pub(crate) use types::{Mailbox, TypedMailbox};
 
 #[macro_use]
 extern crate log;

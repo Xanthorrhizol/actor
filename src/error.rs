@@ -1,4 +1,3 @@
-use crate::Message;
 use thiserror::Error;
 
 /// Error type for the Actor system
@@ -6,14 +5,10 @@ use thiserror::Error;
 pub enum ActorError {
     #[error(transparent)]
     OneshotRecv(#[from] tokio::sync::oneshot::error::RecvError),
-    #[error(transparent)]
-    UnboundedChannelSend(#[from] tokio::sync::mpsc::error::SendError<Message>),
+    #[error("Failed to send on unbounded channel: {0}")]
+    UnboundedChannelSend(String),
     #[error("Failed to recv from unbounded channel")]
     UnboundedChannelRecv,
-    #[error(transparent)]
-    RmpDecodeError(#[from] rmp_serde::decode::Error),
-    #[error(transparent)]
-    RmpEncodeError(#[from] rmp_serde::encode::Error),
     #[error(transparent)]
     AddressRegexError(#[from] regex::Error),
 
@@ -27,4 +22,6 @@ pub enum ActorError {
     CloneFailed(String),
     #[error("Unhealthy ActorSystem")]
     UnhealthyActorSystem,
+    #[error("Message type mismatch")]
+    MessageTypeMismatch,
 }

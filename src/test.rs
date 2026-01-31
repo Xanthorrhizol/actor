@@ -1,12 +1,13 @@
 #![cfg(feature = "xan-log")]
 use crate::{Actor, ActorError, ActorSystem, Blocking, ErrorHandling, JobSpec};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MyMessage1 {
     A(String),
     C(String),
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MyMessage2 {
     B(String),
 }
@@ -42,9 +43,12 @@ impl Actor for MyActor1 {
         &self.address
     }
 
-    async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error> {
+    async fn actor(
+        &mut self,
+        msg: std::sync::Arc<Self::Message>,
+    ) -> Result<Self::Result, Self::Error> {
         debug!("[{}] got MyMessage1: {:?}", self.address(), msg);
-        Ok(msg)
+        Ok((*msg).clone())
     }
 }
 
@@ -58,9 +62,12 @@ impl Actor for MyActor2 {
         &self.address
     }
 
-    async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error> {
+    async fn actor(
+        &mut self,
+        msg: std::sync::Arc<Self::Message>,
+    ) -> Result<Self::Result, Self::Error> {
         debug!("[{}] got MyMessage2: {:?}", self.address(), msg);
-        Ok(msg)
+        Ok((*msg).clone())
     }
 }
 
@@ -74,8 +81,8 @@ impl Actor for MyActor3 {
         &self.address
     }
 
-    async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error> {
-        Ok(msg)
+    async fn actor(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error> {
+        Ok((*msg).clone())
     }
 }
 
