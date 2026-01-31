@@ -28,6 +28,10 @@ struct MyActor2 {
     pub address: String,
 }
 
+struct MyActor3 {
+    pub address: String,
+}
+
 #[async_trait::async_trait]
 impl Actor for MyActor1 {
     type Message = MyMessage1;
@@ -56,6 +60,21 @@ impl Actor for MyActor2 {
 
     async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error> {
         debug!("[{}] got MyMessage2: {:?}", self.address(), msg);
+        Ok(msg)
+    }
+}
+
+#[async_trait::async_trait]
+impl Actor for MyActor3 {
+    type Message = MyMessage1;
+    type Result = MyMessage1;
+    type Error = MyError;
+
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    async fn actor(&mut self, msg: Self::Message) -> Result<Self::Result, Self::Error> {
         Ok(msg)
     }
 }
@@ -277,6 +296,65 @@ async fn test_without_tx_cache() {
             debug!("result returned - {:?}", result);
         }
     }
+    // kill and unregister actor
+    info!("kill and unregister actor *");
+    actor_system.unregister("*".to_string() /* address as regex */);
+}
+
+#[tokio::test]
+async fn test_bench_with_tx_cache() {
+    let _ = xan_log::init_logger();
+    let mut actor_system = ActorSystem::new();
+
+    let actor = MyActor3 {
+        address: "/some/address/3/1".to_string(),
+    };
+    let _ = actor
+        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .await;
+    let now = std::time::Instant::now();
+    let s = String::from_utf8(vec![0; 1024 * 1024]).unwrap();
+    for _ in 0..10000 {
+        let _ = actor_system
+            .send_and_recv::<MyActor3>(
+                "/some/address/3/1".to_string(), /* address */
+                MyMessage1::A(s.clone()),        /* message */
+            )
+            .await
+            .expect("error");
+    }
+    let elapsed = now.elapsed();
+    info!("with_tx_cache elapsed: {}", elapsed.as_millis());
+
+    // kill and unregister actor
+    info!("kill and unregister actor *");
+    actor_system.unregister("*".to_string() /* address as regex */);
+}
+#[tokio::test]
+async fn test_bench_without_tx_cache() {
+    let _ = xan_log::init_logger();
+    let mut actor_system = ActorSystem::new();
+
+    let actor = MyActor3 {
+        address: "/some/address/3/1".to_string(),
+    };
+    let _ = actor
+        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .await;
+    let now = std::time::Instant::now();
+    let s = String::from_utf8(vec![0; 1024 * 1024]).unwrap();
+    for _ in 0..10000 {
+        let _ = actor_system
+            .send_and_recv_without_tx_cache::<MyActor3>(
+                "/some/address/3/1".to_string(), /* address */
+                MyMessage1::A(s.clone()),        /* message */
+            )
+            .await
+            .expect("error");
+    }
+    let elapsed = now.elapsed();
+    info!("without_tx_cache elapsed: {}", elapsed.as_millis());
+
     // kill and unregister actor
     info!("kill and unregister actor *");
     actor_system.unregister("*".to_string() /* address as regex */);
