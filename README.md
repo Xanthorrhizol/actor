@@ -7,7 +7,11 @@
 ```bash
 $ cargo add xan-actor
 $ cargo add serde --features=derive
+$ cargo add async-trait
 ```
+
+> :bulb: If you want to use unbounded-channel on actor system, use `cargo add xan-actor --features=unbounded-channel` instead of `cargo add xan-actor`.
+
 2. create a actor as mutable
 
 ```rust
