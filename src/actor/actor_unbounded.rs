@@ -30,7 +30,7 @@ where
     fn address(&self) -> &str;
 
     /// Handles incoming messages sent to the actor.
-    async fn actor(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error>;
+    async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error>;
 
     /// Pre-start hook that is called before the actor starts processing messages.
     async fn pre_start(&mut self) {}
@@ -118,7 +118,7 @@ where
                     Some(mut msg) = rx.recv() => {
                         let result_tx = msg.result_tx();
                         let msg_de = msg.inner();
-                        match self.actor(msg_de).await {
+                        match self.handle(msg_de).await {
                            Ok(result) => {
                                 if let Some(result_tx) = result_tx {
                                     let _ = result_tx.send(result);

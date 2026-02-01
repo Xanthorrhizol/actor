@@ -12,6 +12,9 @@ pub use error::ActorError;
 pub use types::{JobSpec, Message};
 pub(crate) use types::{Mailbox, TypedMailbox};
 
+#[cfg(feature = "bounded-channel")]
+pub(crate) const CHANNEL_SIZE: usize = 4096;
+
 #[macro_use]
 extern crate log;
 

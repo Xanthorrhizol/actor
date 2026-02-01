@@ -9,6 +9,10 @@ pub enum ActorError {
     UnboundedChannelSend(String),
     #[error("Failed to recv from unbounded channel")]
     UnboundedChannelRecv,
+    #[error("Failed to send on bounded channel: {0}")]
+    BoundedChannelSend(String),
+    #[error("Failed to recv from bounded channel")]
+    BoundedChannelRecv,
     #[error(transparent)]
     AddressRegexError(#[from] regex::Error),
 

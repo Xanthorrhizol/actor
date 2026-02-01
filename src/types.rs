@@ -6,6 +6,7 @@ use std::sync::Arc;
 pub(crate) trait Messenger {
     type TargetActor: Actor;
 
+    #[cfg(feature = "unbounded-channel")]
     fn send(
         tx: tokio::sync::mpsc::UnboundedSender<Message<Self::TargetActor>>,
         msg: Arc<<Self::TargetActor as Actor>::Message>,
@@ -13,7 +14,17 @@ pub(crate) trait Messenger {
         tx.send(Message::new(msg, None))
             .map_err(|e| ActorError::UnboundedChannelSend(e.to_string()))
     }
+    #[cfg(feature = "bounded-channel")]
+    async fn send(
+        tx: tokio::sync::mpsc::Sender<Message<Self::TargetActor>>,
+        msg: Arc<<Self::TargetActor as Actor>::Message>,
+    ) -> Result<(), ActorError> {
+        tx.send(Message::new(msg, None))
+            .await
+            .map_err(|e| ActorError::BoundedChannelSend(e.to_string()))
+    }
 
+    #[cfg(feature = "unbounded-channel")]
     async fn send_and_recv(
         tx: tokio::sync::mpsc::UnboundedSender<Message<Self::TargetActor>>,
         msg: Arc<<Self::TargetActor as Actor>::Message>,
@@ -21,6 +32,17 @@ pub(crate) trait Messenger {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         tx.send(Message::new(msg, Some(result_tx)))
             .map_err(|e| ActorError::UnboundedChannelSend(e.to_string()))?;
+        Ok(result_rx.await?)
+    }
+    #[cfg(feature = "bounded-channel")]
+    async fn send_and_recv(
+        tx: tokio::sync::mpsc::Sender<Message<Self::TargetActor>>,
+        msg: Arc<<Self::TargetActor as Actor>::Message>,
+    ) -> Result<<Self::TargetActor as Actor>::Result, ActorError> {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        tx.send(Message::new(msg, Some(result_tx)))
+            .await
+            .map_err(|e| ActorError::BoundedChannelSend(e.to_string()))?;
         Ok(result_rx.await?)
     }
 }
@@ -33,13 +55,24 @@ pub trait Mailbox: Send + Sync {
         msg: Arc<dyn Any + Send + Sync>,
     ) -> Result<Box<dyn Any + Send>, ActorError>;
 }
-
+#[cfg(feature = "unbounded-channel")]
 pub struct TypedMailbox<A: Actor + Send + Sync> {
     tx: tokio::sync::mpsc::UnboundedSender<Message<A>>,
 }
+#[cfg(feature = "bounded-channel")]
+pub struct TypedMailbox<A: Actor + Send + Sync> {
+    tx: tokio::sync::mpsc::Sender<Message<A>>,
+}
 
+#[cfg(feature = "unbounded-channel")]
 impl<A: Actor + Send + Sync> TypedMailbox<A> {
     pub fn new(tx: tokio::sync::mpsc::UnboundedSender<Message<A>>) -> Self {
+        Self { tx }
+    }
+}
+#[cfg(feature = "bounded-channel")]
+impl<A: Actor + Send + Sync> TypedMailbox<A> {
+    pub fn new(tx: tokio::sync::mpsc::Sender<Message<A>>) -> Self {
         Self { tx }
     }
 }
@@ -55,9 +88,16 @@ where
     A::Message: Any + Send + Sync + 'static,
     A::Result: Any + Send + 'static,
 {
+    #[cfg(feature = "unbounded-channel")]
     async fn send(&self, msg: Arc<dyn Any + Send + Sync>) -> Result<(), ActorError> {
         let msg = Arc::downcast::<A::Message>(msg).map_err(|_| ActorError::MessageTypeMismatch)?;
         <Self as Messenger>::send(self.tx.clone(), msg)
+    }
+
+    #[cfg(feature = "bounded-channel")]
+    async fn send(&self, msg: Arc<dyn Any + Send + Sync>) -> Result<(), ActorError> {
+        let msg = Arc::downcast::<A::Message>(msg).map_err(|_| ActorError::MessageTypeMismatch)?;
+        <Self as Messenger>::send(self.tx.clone(), msg).await
     }
 
     async fn send_and_recv(

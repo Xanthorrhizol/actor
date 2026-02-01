@@ -1,4 +1,6 @@
 #![cfg(feature = "xan-log")]
+#![cfg(feature = "unbounded-channel")]
+
 use crate::{Actor, ActorError, ActorSystem, Blocking, ErrorHandling, JobSpec};
 use std::sync::Arc;
 
@@ -43,7 +45,7 @@ impl Actor for MyActor1 {
         &self.address
     }
 
-    async fn actor(
+    async fn handle(
         &mut self,
         msg: std::sync::Arc<Self::Message>,
     ) -> Result<Self::Result, Self::Error> {
@@ -62,7 +64,7 @@ impl Actor for MyActor2 {
         &self.address
     }
 
-    async fn actor(
+    async fn handle(
         &mut self,
         msg: std::sync::Arc<Self::Message>,
     ) -> Result<Self::Result, Self::Error> {
@@ -81,7 +83,7 @@ impl Actor for MyActor3 {
         &self.address
     }
 
-    async fn actor(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error> {
+    async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error> {
         Ok((*msg).clone())
     }
 }
