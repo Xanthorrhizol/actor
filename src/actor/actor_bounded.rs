@@ -73,6 +73,7 @@ where
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                 if let Err(e) = actor_system_tx
                     .send(ActorSystemCmd::Register(
+                        std::any::type_name::<Self>().to_string(),
                         self.address().to_string(),
                         mailbox.clone(),
                         restart_tx.clone(),
@@ -95,9 +96,7 @@ where
                         e
                     );
                     if count > 10 {
-                        let _ = ready_tx
-                            .send(Err(ActorError::UnhealthyActorSystem))
-                            .await;
+                        let _ = ready_tx.send(Err(ActorError::UnhealthyActorSystem)).await;
                         return Err(ActorError::UnhealthyActorSystem);
                     }
                 }

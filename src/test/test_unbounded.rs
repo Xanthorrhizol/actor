@@ -137,6 +137,13 @@ async fn test_with_tx_cache() {
             .is_some()
     );
 
+    let actor1_ghost = MyActor3 {
+        address: "/some/address/3/1".to_string(),
+    };
+    let _ = actor1_ghost
+        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .await;
+
     let _ = actor_system
         .send_broadcast::<MyActor1>(
             "/some/address/1/*".to_string(), /* address */
@@ -154,6 +161,18 @@ async fn test_with_tx_cache() {
             .await
             .unwrap()
     );
+
+    info!(
+        "[{}] send to wrong address with same message type -> MyActor3",
+        "/some/address/1/1",
+    );
+    actor_system
+        .send_without_tx_cache::<MyActor3>(
+            "/some/address/1/1".to_string(),    /* address */
+            MyMessage1::A("wrong".to_string()), /* message */
+        )
+        .await
+        .unwrap_err();
 
     // restart actor
     actor_system.restart("/some/address/1/*".to_string() /* address as regex */);
@@ -248,6 +267,13 @@ async fn test_without_tx_cache() {
             .is_some()
     );
 
+    let actor1_ghost = MyActor3 {
+        address: "/some/address/3/1".to_string(),
+    };
+    let _ = actor1_ghost
+        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .await;
+
     let _ = actor_system
         .send_broadcast_without_tx_cache::<MyActor1>(
             "/some/address/1/*".to_string(), /* address */
@@ -265,6 +291,18 @@ async fn test_without_tx_cache() {
             .await
             .unwrap()
     );
+
+    info!(
+        "[{}] send to wrong address with same message type -> MyActor3",
+        "/some/address/1/1",
+    );
+    actor_system
+        .send_without_tx_cache::<MyActor3>(
+            "/some/address/1/1".to_string(),    /* address */
+            MyMessage1::A("wrong".to_string()), /* message */
+        )
+        .await
+        .unwrap_err();
 
     // restart actor
     actor_system.restart("/some/address/1/*".to_string() /* address as regex */);

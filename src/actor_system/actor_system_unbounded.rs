@@ -7,6 +7,7 @@ use std::sync::Arc;
 pub enum ActorSystemCmd {
     Register(
         String,
+        String,
         Arc<dyn Mailbox>,
         tokio::sync::mpsc::UnboundedSender<()>,
         tokio::sync::mpsc::UnboundedSender<()>,
@@ -18,6 +19,7 @@ pub enum ActorSystemCmd {
     Unregister(String),
     FilterAddress(String, tokio::sync::oneshot::Sender<Vec<String>>),
     FindActor(
+        String,
         String,
         tokio::sync::oneshot::Sender<
             Option<(Arc<dyn Mailbox>, bool)>, // mailbox, ready
@@ -32,7 +34,7 @@ pub enum ActorSystemCmd {
 /// It's clonable so that it can be shared across different parts of the application.
 pub struct ActorSystem {
     handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd>,
-    cache: HashMap<String, Arc<dyn Mailbox>>,
+    cache: HashMap<String, (String, Arc<dyn Mailbox>)>,
 }
 
 impl Default for ActorSystem {
@@ -103,38 +105,50 @@ impl ActorSystem {
         T: Actor,
     {
         let mut retry_count = 0;
+        let actor_type = std::any::type_name::<T>();
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
             match self.cache.entry(address.clone()) {
                 std::collections::hash_map::Entry::Occupied(o) => {
-                    let mailbox = o.get().clone();
-                    match mailbox.send(payload.clone()).await {
-                        Ok(()) => {
-                            debug!(
-                                "Send message to actor {} through cached_tx succeeded",
-                                address
-                            );
-                            return Ok(());
+                    let (cached_actor_type, mailbox) = o.get().clone();
+                    if actor_type == cached_actor_type {
+                        match mailbox.send(payload.clone()).await {
+                            Ok(()) => {
+                                debug!(
+                                    "Send message to actor {} through cached_tx succeeded",
+                                    address
+                                );
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Send message to actor {} through cached_tx failed: {:?} ... removing from cache",
+                                    address, e
+                                );
+                                self.cache.remove(&address);
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                "Send message to actor {} through cached_tx failed: {:?} ... removing from cache",
-                                address, e
-                            );
-                            self.cache.remove(&address);
-                        }
+                    } else {
+                        warn!(
+                            "Send message with cached tx failed: cached tx of address {} and target actor {} is mismatched ... removing from cache",
+                            address, actor_type,
+                        );
+                        self.cache.remove(&address);
                     }
                 }
                 _ => {}
             }
-            let _ = self
-                .handler_tx
-                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            let _ = self.handler_tx.send(ActorSystemCmd::FindActor(
+                actor_type.to_string(),
+                address.clone(),
+                tx,
+            ));
             if let Ok(Some((tx, ready))) = rx.await {
                 if ready {
                     debug!("Saving actor {} tx to cache", address);
-                    self.cache.insert(address.clone(), tx.clone());
+                    self.cache
+                        .insert(address.clone(), (actor_type.to_string(), tx.clone()));
                     let _ = tx.send(payload.clone()).await?;
                     return Ok(());
                 } else {
@@ -169,12 +183,15 @@ impl ActorSystem {
         T: Actor,
     {
         let mut retry_count = 0;
+        let actor_type = std::any::type_name::<T>();
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = self
-                .handler_tx
-                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            let _ = self.handler_tx.send(ActorSystemCmd::FindActor(
+                actor_type.to_string(),
+                address.clone(),
+                tx,
+            ));
             if let Ok(Some((tx, ready))) = rx.await {
                 if ready {
                     let _ = tx.send(payload.clone()).await?;
@@ -211,6 +228,7 @@ impl ActorSystem {
         T: Actor,
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let actor_type = std::any::type_name::<T>();
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FilterAddress(address_regex, tx));
@@ -226,23 +244,31 @@ impl ActorSystem {
         for address in addresses.iter() {
             match self.cache.entry(address.clone()) {
                 std::collections::hash_map::Entry::Occupied(o) => {
-                    let tx = o.get().clone();
-                    debug!(
-                        "Send message to actor {} through cached_tx succeeded",
-                        address
-                    );
-                    match tx.send(payload.clone()).await {
-                        Ok(()) => {
-                            result.push(Ok(()));
-                            continue;
+                    let (cached_actor_type, tx) = o.get().clone();
+                    if cached_actor_type == actor_type {
+                        debug!(
+                            "Send message to actor {} through cached_tx succeeded",
+                            address
+                        );
+                        match tx.send(payload.clone()).await {
+                            Ok(()) => {
+                                result.push(Ok(()));
+                                continue;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Send message to actor {} through cached_tx failed: {:?} ... removing from cache",
+                                    address, e
+                                );
+                                self.cache.remove(address);
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                "Send message to actor {} through cached_tx failed: {:?} ... removing from cache",
-                                address, e
-                            );
-                            self.cache.remove(address);
-                        }
+                    } else {
+                        warn!(
+                            "Send message with cached tx failed: cached tx of address {} and target actor {} is mismatched ... removing from cache",
+                            address, actor_type,
+                        );
+                        self.cache.remove(address);
                     }
                 }
                 _ => {}
@@ -250,13 +276,16 @@ impl ActorSystem {
             let mut retry_count = 0;
             loop {
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = self
-                    .handler_tx
-                    .send(ActorSystemCmd::FindActor(address.clone(), tx));
+                let _ = self.handler_tx.send(ActorSystemCmd::FindActor(
+                    actor_type.to_string(),
+                    address.clone(),
+                    tx,
+                ));
                 if let Ok(Some((tx, ready))) = rx.await {
                     if ready {
                         debug!("Saving actor {} tx to cache", address);
-                        self.cache.insert(address.clone(), tx.clone());
+                        self.cache
+                            .insert(address.clone(), (actor_type.to_string(), tx.clone()));
                         result.push(tx.send(payload.clone()).await);
                         break;
                     } else {
@@ -296,6 +325,7 @@ impl ActorSystem {
         T: Actor,
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let actor_type = std::any::type_name::<T>();
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FilterAddress(address_regex, tx));
@@ -312,9 +342,11 @@ impl ActorSystem {
             let mut retry_count = 0;
             loop {
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = self
-                    .handler_tx
-                    .send(ActorSystemCmd::FindActor(address.clone(), tx));
+                let _ = self.handler_tx.send(ActorSystemCmd::FindActor(
+                    actor_type.to_string(),
+                    address.clone(),
+                    tx,
+                ));
                 if let Ok(Some((tx, ready))) = rx.await {
                     if ready {
                         result.push(tx.send(payload.clone()).await);
@@ -353,41 +385,53 @@ impl ActorSystem {
         T: Actor,
     {
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
+        let actor_type = std::any::type_name::<T>();
         let mut retry_count = 0;
         loop {
             match self.cache.entry(address.clone()) {
                 std::collections::hash_map::Entry::Occupied(o) => {
-                    let tx = o.get().clone();
-                    match tx.send_and_recv(payload.clone()).await {
-                        Ok(result_any) => {
-                            debug!(
-                                "Send message to actor {} through cached_tx succeeded",
-                                address
-                            );
-                            let result = result_any
-                                .downcast::<T::Result>()
-                                .map_err(|_| ActorError::MessageTypeMismatch)?;
-                            return Ok(*result);
+                    let (cached_actor_type, tx) = o.get().clone();
+                    if cached_actor_type == actor_type {
+                        match tx.send_and_recv(payload.clone()).await {
+                            Ok(result_any) => {
+                                debug!(
+                                    "Send message to actor {} through cached_tx succeeded",
+                                    address
+                                );
+                                let result = result_any
+                                    .downcast::<T::Result>()
+                                    .map_err(|_| ActorError::MessageTypeMismatch)?;
+                                return Ok(*result);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Send message to actor {} through cached_tx failed: {:?} ... removing from cache",
+                                    address, e
+                                );
+                                self.cache.remove(&address);
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                "Send message to actor {} through cached_tx failed: {:?} ... removing from cache",
-                                address, e
-                            );
-                            self.cache.remove(&address);
-                        }
+                    } else {
+                        warn!(
+                            "Send message with cached tx failed: cached tx of address {} and target actor {} is mismatched ... removing from cache",
+                            address, actor_type,
+                        );
+                        self.cache.remove(&address);
                     }
                 }
                 _ => {}
             }
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = self
-                .handler_tx
-                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            let _ = self.handler_tx.send(ActorSystemCmd::FindActor(
+                actor_type.to_string(),
+                address.clone(),
+                tx,
+            ));
             if let Ok(Some((tx, ready))) = rx.await {
                 if ready {
                     debug!("Saving actor {} tx to cache", address);
-                    self.cache.insert(address.clone(), tx.clone());
+                    self.cache
+                        .insert(address.clone(), (actor_type.to_string(), tx.clone()));
                     let result_any = tx.send_and_recv(payload.clone()).await?;
                     let result = result_any
                         .downcast::<T::Result>()
@@ -424,12 +468,15 @@ impl ActorSystem {
         T: Actor,
     {
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
+        let actor_type = std::any::type_name::<T>();
         let mut retry_count = 0;
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = self
-                .handler_tx
-                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            let _ = self.handler_tx.send(ActorSystemCmd::FindActor(
+                actor_type.to_string(),
+                address.clone(),
+                tx,
+            ));
             if let Ok(Some((tx, ready))) = rx.await {
                 if ready {
                     let result_any = tx.send_and_recv(payload.clone()).await?;
@@ -475,15 +522,21 @@ impl ActorSystem {
     {
         let mut retry_count = 0;
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
+        let actor_type = std::any::type_name::<T>();
         let mailbox = loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = self
-                .handler_tx
-                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            let _ = self.handler_tx.send(ActorSystemCmd::FindActor(
+                actor_type.to_string(),
+                address.clone(),
+                tx,
+            ));
             if let Ok(Some((mailbox, ready))) = rx.await {
                 if ready {
                     debug!("Saving actor {} tx to cache", address);
-                    self.cache.insert(address.clone(), mailbox.clone());
+                    if let None = self.cache.get(&address) {
+                        self.cache
+                            .insert(address.clone(), (actor_type.to_string(), mailbox.clone()));
+                    }
                     break mailbox;
                 } else {
                     retry_count += 1;
@@ -588,11 +641,14 @@ impl ActorSystem {
     {
         let mut retry_count = 0;
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
+        let actor_type = std::any::type_name::<T>();
         let mailbox = loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = self
-                .handler_tx
-                .send(ActorSystemCmd::FindActor(address.clone(), tx));
+            let _ = self.handler_tx.send(ActorSystemCmd::FindActor(
+                actor_type.to_string(),
+                address.clone(),
+                tx,
+            ));
             if let Ok(Some((mailbox, ready))) = rx.await {
                 if ready {
                     break mailbox;
@@ -697,6 +753,7 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
     let mut map = HashMap::<
         String,
         (
+            String,
             Arc<dyn Mailbox>,
             tokio::sync::mpsc::UnboundedSender<()>,
             tokio::sync::mpsc::UnboundedSender<()>,
@@ -706,6 +763,7 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
     while let Some(msg) = handler_rx.recv().await {
         match msg {
             ActorSystemCmd::Register(
+                actor_type,
                 address,
                 tx,
                 restart_tx,
@@ -714,12 +772,18 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
                 result_tx,
                 is_restarted,
             ) => {
-                debug!("Register actor with address {}", address);
+                debug!(
+                    "Register actor with address {} with type {}",
+                    address, actor_type
+                );
                 if map.contains_key(&address) && !is_restarted {
                     let _ = result_tx.send(Err(ActorError::AddressAlreadyExist(address)));
                     continue;
                 }
-                map.insert(address.clone(), (tx, restart_tx, kill_tx, life_cycle));
+                map.insert(
+                    address.clone(),
+                    (actor_type, tx, restart_tx, kill_tx, life_cycle),
+                );
                 address_list.insert(address);
                 let _ = result_tx.send(Ok(()));
             }
@@ -733,7 +797,9 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
                     }
                 };
                 for address in addresses {
-                    if let Some((_tx, restart_tx, _kill_tx, life_cycle)) = map.get_mut(&address) {
+                    if let Some((_actor_type, _tx, restart_tx, _kill_tx, life_cycle)) =
+                        map.get_mut(&address)
+                    {
                         *life_cycle = LifeCycle::Restarting;
                         let _ = restart_tx.send(());
                     }
@@ -751,7 +817,7 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
                 for address in addresses {
                     match map.entry(address.to_string()) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
-                            let _ = entry.get_mut().2.send(());
+                            let _ = entry.get_mut().3.send(());
                             entry.remove_entry();
                             address_list.remove(&address);
                         }
@@ -772,16 +838,25 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
                 };
                 let _ = result_tx.send(addresses);
             }
-            ActorSystemCmd::FindActor(address, result_tx) => {
-                debug!("FindActor with address {}", address);
-                if let Some((tx, _restart_tx, _kill_tx, life_cycle)) = map.get(&address) {
-                    let _ = result_tx.send(Some((
-                        tx.clone(),
-                        match life_cycle {
-                            LifeCycle::Receiving => true,
-                            _ => false,
-                        },
-                    )));
+            ActorSystemCmd::FindActor(target_actor_type, address, result_tx) => {
+                debug!(
+                    "FindActor with address {} with type {}",
+                    address, target_actor_type
+                );
+                if let Some((actor_type, tx, _restart_tx, _kill_tx, life_cycle)) = map.get(&address)
+                {
+                    match life_cycle {
+                        LifeCycle::Receiving => {
+                            if *actor_type == target_actor_type {
+                                let _ = result_tx.send(Some((tx.clone(), true)));
+                            } else {
+                                let _ = result_tx.send(None);
+                            }
+                        }
+                        _ => {
+                            let _ = result_tx.send(Some((tx.clone(), false)));
+                        }
+                    }
                 } else {
                     let _ = result_tx.send(None);
                 }
@@ -792,7 +867,7 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
                     address, life_cycle
                 );
                 if let Some(actor) = map.get_mut(&address) {
-                    actor.3 = life_cycle;
+                    actor.4 = life_cycle;
                 };
             }
         };

@@ -68,6 +68,7 @@ where
             let result_rx = loop {
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                 if let Err(e) = actor_system_tx.send(ActorSystemCmd::Register(
+                    std::any::type_name::<Self>().to_string(),
                     self.address().to_string(),
                     mailbox.clone(),
                     restart_tx.clone(),
