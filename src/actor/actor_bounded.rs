@@ -193,42 +193,6 @@ where
         }
     }
 
-    #[cfg(feature = "unbounded-channel")]
-    /// Registers the actor with the actor system and starts it.
-    async fn register(
-        mut self,
-        actor_system: &mut ActorSystem,
-        error_handling: ErrorHandling,
-        blocking: Blocking,
-    ) -> Result<(), ActorError> {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let actor_system_tx = actor_system.handler_tx();
-        let _ = if blocking == Blocking::Blocking {
-            tokio::task::spawn_blocking(move || {
-                let result = tokio::runtime::Handle::current().block_on(self.run_actor(
-                    actor_system_tx,
-                    error_handling,
-                    tx,
-                ));
-                if let Err(e) = result {
-                    error!("Actor {} run failed: {:?}", self.address(), e);
-                }
-            })
-        } else {
-            tokio::spawn(async move {
-                let result = self.run_actor(actor_system_tx, error_handling, tx).await;
-                if let Err(e) = result {
-                    error!("Actor {} run failed: {:?}", self.address(), e);
-                }
-            })
-        };
-        if let Some(result) = rx.recv().await {
-            result
-        } else {
-            Err(ActorError::UnboundedChannelRecv)
-        }
-    }
-    #[cfg(feature = "bounded-channel")]
     /// Registers the actor with the actor system and starts it.
     async fn register(
         mut self,
