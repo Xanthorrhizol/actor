@@ -14,10 +14,18 @@ $ cargo add async-trait
 
 2. create a actor as mutable
 
+**bounded-channel feature**
 ```rust
 use xan_actor::ActorSystem;
 ...
 
+let mut actor_system = ActorSystem::new(None /* channel size */);
+```
+
+**unbounded-channel feature**
+```rust
+use xan_actor::ActorSystem;
+...
 let mut actor_system = ActorSystem::new();
 ```
 
@@ -56,15 +64,15 @@ struct MyActor2 {
 
 #[async_trait::async_trait]
 impl Actor for MyActor1 {
-    type ActorMessage = MyMessage1;
-    type ActorResult = MyMessage1;
-    type ActorError = MyError;
+    type Message = MyMessage1;
+    type Result = MyMessage1;
+    type Error = MyError;
 
     fn address(&self) -> &str {
         &self.address
     }
 
-    async fn actor(&mut self, msg: MyMessage1) -> Result<MyMessage1, MyError> {
+    async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, MyError> {
         println!("[{}] got MyMessage1: {:?}", self.address(), msg);
         Ok(msg)
     }
@@ -72,15 +80,15 @@ impl Actor for MyActor1 {
 
 #[async_trait::async_trait]
 impl Actor for MyActor2 {
-    type ActorMessage = MyMessage2;
-    type ActorResult = MyMessage2;
-    type ActorError = MyError;
+    type Message = MyMessage2;
+    type Result = MyMessage2;
+    type Error = MyError;
 
     fn address(&self) -> &str {
         &self.address
     }
 
-    async fn actor(&mut self, msg: MyMessage2) -> Result<MyMessage2, MyError> {
+    async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, MyError> {
         println!("[{}] got MyMessage2: {:?}", self.address(), msg);
         Ok(msg)
     }
@@ -89,6 +97,27 @@ impl Actor for MyActor2 {
 
 4. register actor into actor system
 
+**bounded-channel feature**
+```rust
+use crate::xan_actor::{ErrorHandling, Blocking};
+
+let actor1 = MyActor1 {
+    address: "/some/address/1/1".to_string(),
+};
+actor1.register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking, None /* channel size */).await;
+
+let actor2 = MyActor2 {
+    address: "/some/address/2".to_string(),
+};
+actor2.register(&mut actor_system, ErrorHandling::Restart, Blocking::NonBlocking, None /* channel size */).await;
+
+let actor3 = MyActor1 {
+    address: "/some/address/1/2".to_string(),
+};
+actor3.register(&mut actor_system, ErrorHandling::Resume, Blocking::Blocking, None /* channel size */).await;
+```
+
+**unbounded-channel feature**
 ```rust
 use crate::xan_actor::{ErrorHandling, Blocking};
 
