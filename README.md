@@ -72,7 +72,7 @@ impl Actor for MyActor1 {
         &self.address
     }
 
-    async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, MyError> {
+    async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error> {
         println!("[{}] got MyMessage1: {:?}", self.address(), msg);
         Ok(msg)
     }
@@ -88,7 +88,7 @@ impl Actor for MyActor2 {
         &self.address
     }
 
-    async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, MyError> {
+    async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error> {
         println!("[{}] got MyMessage2: {:?}", self.address(), msg);
         Ok(msg)
     }
