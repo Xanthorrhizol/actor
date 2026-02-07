@@ -177,18 +177,36 @@ use xan_actor::JobSpec;
 ...
 
 let job = JobSpec::new(
-  Some(2), /* max_iter */
+  None, /* max_iter */
   Some(std::time::Duration::from_secs(3)), /* interval */
   std::time::SystemTime::now(), /* start_at */
 );
-if let Ok(Some(recv_rx)) = actor_system.run_job::<MyActor1>(
+if let Ok(RunJobResult {
+    job_id,
+    result_subscriber_rx,
+}) = actor_system.run_job::<MyActor1>(
   "/some/address/1/1".to_string(), /* address */
   true, /* whether subscribe the handler result or not(true => Some(rx)) */
   job, /* job as JobSpec */
   MyMessage1::C("c".to_string()), /* message */
+  None, /* job_id(if you want to specify)*/
 ).await {
-    while let Some(result) = recv_rx.recv().await {
-        println!("result returned");
+    let mut i = 0;
+    if let Some(mut recv_rx) = result_subscriber_rx {
+        while let Some(result) = recv_rx.recv().await {
+            i += 1;
+            println!("result returned");
+            if i == 3 {
+                // you can stop or resume the job
+                actor_system.stop_job(job_id).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                actor_system.resume_job(job_id).await;
+            }
+            if i == 5 {
+                // you can abort the job
+                actor_system.abort_job(job_id).await;
+            }
+        }
     }
 }
 ```

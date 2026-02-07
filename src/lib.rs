@@ -9,7 +9,7 @@ pub mod types;
 pub use actor::*;
 pub use actor_system::*;
 pub use error::ActorError;
-pub use types::{JobSpec, Message};
+pub use types::{JobController, JobSpec, Message, RunJobResult};
 pub(crate) use types::{Mailbox, TypedMailbox};
 
 #[cfg(feature = "bounded-channel")]
@@ -41,4 +41,11 @@ pub enum ErrorHandling {
 pub enum Blocking {
     Blocking,
     NonBlocking,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Job status
+pub enum JobStatus {
+    Running,
+    Stopped,
 }

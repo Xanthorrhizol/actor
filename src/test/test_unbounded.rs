@@ -1,7 +1,7 @@
 #![cfg(feature = "xan-log")]
 #![cfg(feature = "unbounded-channel")]
 
-use crate::{Actor, ActorError, ActorSystem, Blocking, ErrorHandling, JobSpec};
+use crate::{Actor, ActorError, ActorSystem, Blocking, ErrorHandling, JobSpec, RunJobResult};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -200,17 +200,68 @@ async fn test_with_tx_cache() {
         Some(std::time::Duration::from_secs(3)), /* interval */
         std::time::SystemTime::now(),            /* start_at */
     );
-    if let Ok(Some(mut recv_rx)) = actor_system
+    if let Ok(RunJobResult {
+        job_id: _,
+        result_subscriber_rx,
+    }) = actor_system
         .run_job::<MyActor1>(
-            "/some/address/1/1".to_string(), /* address */
+            "/some/address/1/1".to_string(),   /* address */
             true, /* whether subscribe the handler result or not(true => Some(rx)) */
             job,  /* job as JobSpec */
-            MyMessage1::C("c".to_string()), /* message */
+            MyMessage1::C("job1".to_string()), /* message */
+            None,
         )
         .await
     {
-        while let Some(result) = recv_rx.recv().await {
-            debug!("result returned - {:?}", result);
+        if let Some(mut recv_rx) = result_subscriber_rx {
+            while let Some(result) = recv_rx.recv().await {
+                debug!("result returned - {:?}", result);
+            }
+        } else {
+            panic!("result_subscriber_rx is None");
+        }
+    }
+    let job = JobSpec::new(
+        None,
+        Some(std::time::Duration::from_secs(3)), /* interval */
+        std::time::SystemTime::now(),            /* start_at */
+    );
+    if let Ok(RunJobResult {
+        job_id,
+        result_subscriber_rx,
+    }) = actor_system
+        .run_job::<MyActor1>(
+            "/some/address/1/1".to_string(),   /* address */
+            true, /* whether subscribe the handler result or not(true => Some(rx)) */
+            job,  /* job as JobSpec */
+            MyMessage1::C("job2".to_string()), /* message */
+            None,
+        )
+        .await
+    {
+        if let Some(mut recv_rx) = result_subscriber_rx {
+            let mut i = 0;
+            while let Some(result) = recv_rx.recv().await {
+                debug!("result returned - {:?}", result);
+                i += 1;
+                if i == 3 {
+                    actor_system.stop_job(job_id.clone()).await;
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            actor_system.resume_job(job_id.clone()).await;
+            i = 0;
+            while let Some(result) = recv_rx.recv().await {
+                debug!("result returned - {:?}", result);
+                i += 1;
+                if i == 3 {
+                    actor_system.abort_job(job_id).await;
+                    break;
+                }
+            }
+        } else {
+            panic!("result_subscriber_rx is None");
         }
     }
     // kill and unregister actor
@@ -330,17 +381,68 @@ async fn test_without_tx_cache() {
         Some(std::time::Duration::from_secs(3)), /* interval */
         std::time::SystemTime::now(),            /* start_at */
     );
-    if let Ok(Some(mut recv_rx)) = actor_system
+    if let Ok(RunJobResult {
+        job_id: _,
+        result_subscriber_rx,
+    }) = actor_system
         .run_job_without_tx_cache::<MyActor1>(
-            "/some/address/1/1".to_string(), /* address */
+            "/some/address/1/1".to_string(),   /* address */
             true, /* whether subscribe the handler result or not(true => Some(rx)) */
             job,  /* job as JobSpec */
-            MyMessage1::C("c".to_string()), /* message */
+            MyMessage1::C("job1".to_string()), /* message */
+            None,
         )
         .await
     {
-        while let Some(result) = recv_rx.recv().await {
-            debug!("result returned - {:?}", result);
+        if let Some(mut recv_rx) = result_subscriber_rx {
+            while let Some(result) = recv_rx.recv().await {
+                debug!("result returned - {:?}", result);
+            }
+        } else {
+            panic!("result_subscriber_rx is None");
+        }
+    }
+    let job = JobSpec::new(
+        None,
+        Some(std::time::Duration::from_secs(3)), /* interval */
+        std::time::SystemTime::now(),            /* start_at */
+    );
+    if let Ok(RunJobResult {
+        job_id,
+        result_subscriber_rx,
+    }) = actor_system
+        .run_job_without_tx_cache::<MyActor1>(
+            "/some/address/1/1".to_string(),   /* address */
+            true, /* whether subscribe the handler result or not(true => Some(rx)) */
+            job,  /* job as JobSpec */
+            MyMessage1::C("job2".to_string()), /* message */
+            None,
+        )
+        .await
+    {
+        if let Some(mut recv_rx) = result_subscriber_rx {
+            let mut i = 0;
+            while let Some(result) = recv_rx.recv().await {
+                debug!("result returned - {:?}", result);
+                i += 1;
+                if i == 3 {
+                    actor_system.stop_job(job_id.clone()).await;
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            actor_system.resume_job(job_id.clone()).await;
+            i = 0;
+            while let Some(result) = recv_rx.recv().await {
+                debug!("result returned - {:?}", result);
+                i += 1;
+                if i == 3 {
+                    actor_system.abort_job(job_id).await;
+                    break;
+                }
+            }
+        } else {
+            panic!("result_subscriber_rx is None");
         }
     }
     // kill and unregister actor

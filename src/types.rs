@@ -211,3 +211,35 @@ impl Default for JobSpec {
         }
     }
 }
+
+#[cfg(feature = "bounded-channel")]
+#[derive(Debug)]
+pub struct RunJobResult<T: Actor> {
+    pub job_id: String,
+    pub result_subscriber_rx:
+        Option<tokio::sync::mpsc::Receiver<Result<<T as Actor>::Result, ActorError>>>,
+}
+
+#[cfg(feature = "unbounded-channel")]
+#[derive(Debug)]
+pub struct RunJobResult<T: Actor> {
+    pub job_id: String,
+    pub result_subscriber_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<Result<<T as Actor>::Result, ActorError>>>,
+}
+
+#[cfg(feature = "bounded-channel")]
+#[derive(Clone)]
+pub struct JobController {
+    pub abort_tx: tokio::sync::mpsc::Sender<()>,
+    pub stop_tx: tokio::sync::mpsc::Sender<()>,
+    pub resume_tx: tokio::sync::mpsc::Sender<()>,
+}
+
+#[cfg(feature = "unbounded-channel")]
+#[derive(Clone)]
+pub struct JobController {
+    pub abort_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    pub stop_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    pub resume_tx: tokio::sync::mpsc::UnboundedSender<()>,
+}

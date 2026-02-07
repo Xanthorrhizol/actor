@@ -1,4 +1,4 @@
-use crate::{Actor, ActorError, JobSpec, LifeCycle, Mailbox};
+use crate::{Actor, ActorError, JobController, JobSpec, LifeCycle, Mailbox, RunJobResult};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -35,6 +35,14 @@ pub enum ActorSystemCmd {
     SetLifeCycle {
         address: String,
         life_cycle: LifeCycle,
+    },
+    RegisterJob {
+        job_id: String,
+        controller: JobController,
+    },
+    FindJob {
+        job_id: String,
+        result_tx: tokio::sync::oneshot::Sender<Option<JobController>>,
     },
 }
 
@@ -522,19 +530,19 @@ impl ActorSystem {
     /// Runs a job with the specified actor and message.
     /// If you want to subscribe to the results, set `subscribe` to true.
     /// It returns a receiver that you can use to receive the results.
+    /// If you want to set a job_id, set it to `Some(job_id)`.
     pub async fn run_job<T>(
         &mut self,
         address: String,
         subscribe: bool,
         job: JobSpec,
         msg: <T as Actor>::Message,
-    ) -> Result<
-        Option<tokio::sync::mpsc::UnboundedReceiver<Result<<T as Actor>::Result, ActorError>>>,
-        ActorError,
-    >
+        job_id: Option<String>,
+    ) -> Result<RunJobResult<T>, ActorError>
     where
         T: Actor,
     {
+        let job_id = job_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut retry_count = 0;
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
         let actor_type = std::any::type_name::<T>();
@@ -573,11 +581,24 @@ impl ActorSystem {
         };
         if subscribe {
             let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (abort_tx, abort_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (stop_tx, stop_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel();
             let payload = payload.clone();
             let _ = tokio::spawn(async move {
                 let mut i = 0;
+                let mut abort_rx = abort_rx;
+                let mut stop_rx = stop_rx;
+                let mut resume_rx = resume_rx;
                 if let Some(interval) = job.interval() {
                     loop {
+                        if abort_rx.try_recv().is_ok() {
+                            drop(sub_tx);
+                            return;
+                        }
+                        if stop_rx.try_recv().is_ok() {
+                            resume_rx.recv().await;
+                        }
                         if job.start_at() <= std::time::SystemTime::now() {
                             i += 1;
                             let result = match mailbox.send_and_recv(payload.clone()).await {
@@ -598,6 +619,13 @@ impl ActorSystem {
                         }
                     }
                 } else {
+                    if abort_rx.try_recv().is_ok() {
+                        drop(sub_tx);
+                        return;
+                    }
+                    if stop_rx.try_recv().is_ok() {
+                        resume_rx.recv().await;
+                    }
                     if job.start_at() <= std::time::SystemTime::now() {
                         let result = match mailbox.send_and_recv(payload.clone()).await {
                             Ok(result_any) => result_any
@@ -610,12 +638,35 @@ impl ActorSystem {
                     }
                 }
             });
-            return Ok(Some(sub_rx));
+            let _ = self.handler_tx.send(ActorSystemCmd::RegisterJob {
+                job_id: job_id.clone(),
+                controller: JobController {
+                    abort_tx,
+                    stop_tx,
+                    resume_tx,
+                },
+            });
+            return Ok(RunJobResult {
+                job_id,
+                result_subscriber_rx: Some(sub_rx),
+            });
         } else {
+            let (abort_tx, abort_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (stop_tx, stop_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel();
             let _ = tokio::spawn(async move {
                 let mut i = 0;
+                let mut abort_rx = abort_rx;
+                let mut stop_rx = stop_rx;
+                let mut resume_rx = resume_rx;
                 if let Some(interval) = job.interval() {
                     loop {
+                        if abort_rx.try_recv().is_ok() {
+                            return;
+                        }
+                        if stop_rx.try_recv().is_ok() {
+                            resume_rx.recv().await;
+                        }
                         if job.start_at() <= std::time::SystemTime::now() {
                             i += 1;
                             let _ = mailbox.send(payload.clone()).await;
@@ -628,12 +679,29 @@ impl ActorSystem {
                         }
                     }
                 } else {
+                    if abort_rx.try_recv().is_ok() {
+                        return;
+                    }
+                    if stop_rx.try_recv().is_ok() {
+                        resume_rx.recv().await;
+                    }
                     if job.start_at() <= std::time::SystemTime::now() {
                         let _ = mailbox.send(payload.clone()).await;
                     }
                 }
             });
-            return Ok(None);
+            let _ = self.handler_tx.send(ActorSystemCmd::RegisterJob {
+                job_id: job_id.clone(),
+                controller: JobController {
+                    abort_tx,
+                    stop_tx,
+                    resume_tx,
+                },
+            });
+            return Ok(RunJobResult {
+                job_id,
+                result_subscriber_rx: None,
+            });
         }
     }
 
@@ -641,19 +709,19 @@ impl ActorSystem {
     /// If you want to subscribe to the results, set `subscribe` to true.
     /// It returns a receiver that you can use to receive the results.
     /// It doesn't cache the actor's tx for future use.
+    /// If you want to set a job_id, set it to `Some(job_id)`.
     pub async fn run_job_without_tx_cache<T>(
         &self,
         address: String,
         subscribe: bool,
         job: JobSpec,
         msg: <T as Actor>::Message,
-    ) -> Result<
-        Option<tokio::sync::mpsc::UnboundedReceiver<Result<<T as Actor>::Result, ActorError>>>,
-        ActorError,
-    >
+        job_id: Option<String>,
+    ) -> Result<RunJobResult<T>, ActorError>
     where
         T: Actor,
     {
+        let job_id = job_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut retry_count = 0;
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
         let actor_type = std::any::type_name::<T>();
@@ -688,10 +756,23 @@ impl ActorSystem {
         if subscribe {
             let (sub_tx, sub_rx) = tokio::sync::mpsc::unbounded_channel();
             let payload = payload.clone();
+            let (abort_tx, abort_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (stop_tx, stop_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel();
             let _ = tokio::spawn(async move {
                 let mut i = 0;
+                let mut abort_rx = abort_rx;
+                let mut stop_rx = stop_rx;
+                let mut resume_rx = resume_rx;
                 if let Some(interval) = job.interval() {
                     loop {
+                        if abort_rx.try_recv().is_ok() {
+                            drop(sub_tx);
+                            return;
+                        }
+                        if stop_rx.try_recv().is_ok() {
+                            resume_rx.recv().await;
+                        }
                         if job.start_at() <= std::time::SystemTime::now() {
                             i += 1;
                             let result = match mailbox.send_and_recv(payload.clone()).await {
@@ -712,6 +793,13 @@ impl ActorSystem {
                         }
                     }
                 } else {
+                    if abort_rx.try_recv().is_ok() {
+                        drop(sub_tx);
+                        return;
+                    }
+                    if stop_rx.try_recv().is_ok() {
+                        resume_rx.recv().await;
+                    }
                     if job.start_at() <= std::time::SystemTime::now() {
                         let result = match mailbox.send_and_recv(payload.clone()).await {
                             Ok(result_any) => result_any
@@ -724,12 +812,35 @@ impl ActorSystem {
                     }
                 }
             });
-            return Ok(Some(sub_rx));
+            let _ = self.handler_tx.send(ActorSystemCmd::RegisterJob {
+                job_id: job_id.clone(),
+                controller: JobController {
+                    abort_tx,
+                    stop_tx,
+                    resume_tx,
+                },
+            });
+            return Ok(RunJobResult {
+                job_id,
+                result_subscriber_rx: Some(sub_rx),
+            });
         } else {
+            let (abort_tx, abort_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (stop_tx, stop_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel();
             let _ = tokio::spawn(async move {
                 let mut i = 0;
+                let mut abort_rx = abort_rx;
+                let mut stop_rx = stop_rx;
+                let mut resume_rx = resume_rx;
                 if let Some(interval) = job.interval() {
                     loop {
+                        if abort_rx.try_recv().is_ok() {
+                            return;
+                        }
+                        if stop_rx.try_recv().is_ok() {
+                            resume_rx.recv().await;
+                        }
                         if job.start_at() <= std::time::SystemTime::now() {
                             i += 1;
                             let _ = mailbox.send(payload.clone()).await;
@@ -742,12 +853,89 @@ impl ActorSystem {
                         }
                     }
                 } else {
+                    if abort_rx.try_recv().is_ok() {
+                        return;
+                    }
+                    if stop_rx.try_recv().is_ok() {
+                        resume_rx.recv().await;
+                    }
                     if job.start_at() <= std::time::SystemTime::now() {
                         let _ = mailbox.send(payload.clone()).await;
                     }
                 }
             });
-            return Ok(None);
+            let _ = self.handler_tx.send(ActorSystemCmd::RegisterJob {
+                job_id: job_id.clone(),
+                controller: JobController {
+                    abort_tx,
+                    stop_tx,
+                    resume_tx,
+                },
+            });
+            return Ok(RunJobResult {
+                job_id,
+                result_subscriber_rx: None,
+            });
+        }
+    }
+
+    pub async fn abort_job(&self, job_id: String) {
+        info!("Aborting job {}", job_id);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.handler_tx.send(ActorSystemCmd::FindJob {
+            job_id: job_id.clone(),
+            result_tx: tx,
+        });
+        match rx.await {
+            Ok(Some(controller)) => {
+                let _ = controller.abort_tx.send(());
+            }
+            Ok(None) => {
+                error!("Job {} not found", job_id);
+            }
+            Err(e) => {
+                error!("Find job {} failed: {}", job_id, e);
+            }
+        }
+    }
+
+    pub async fn stop_job(&self, job_id: String) {
+        info!("Stopping job {}", job_id);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.handler_tx.send(ActorSystemCmd::FindJob {
+            job_id: job_id.clone(),
+            result_tx: tx,
+        });
+        match rx.await {
+            Ok(Some(controller)) => {
+                let _ = controller.stop_tx.send(());
+            }
+            Ok(None) => {
+                error!("Job {} not found", job_id);
+            }
+            Err(e) => {
+                error!("Find job {} failed: {}", job_id, e);
+            }
+        }
+    }
+
+    pub async fn resume_job(&self, job_id: String) {
+        info!("Resuming job {}", job_id);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.handler_tx.send(ActorSystemCmd::FindJob {
+            job_id: job_id.clone(),
+            result_tx: tx,
+        });
+        match rx.await {
+            Ok(Some(controller)) => {
+                let _ = controller.resume_tx.send(());
+            }
+            Ok(None) => {
+                error!("Job {} not found", job_id);
+            }
+            Err(e) => {
+                error!("Find job {} failed: {}", job_id, e);
+            }
         }
     }
 
@@ -775,6 +963,7 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
             LifeCycle,
         ),
     >::new();
+    let mut job_controllers = HashMap::new();
     while let Some(msg) = handler_rx.recv().await {
         match msg {
             ActorSystemCmd::Register {
@@ -895,6 +1084,14 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::UnboundedReceiver<
                 if let Some(actor) = map.get_mut(&address) {
                     actor.4 = life_cycle;
                 };
+            }
+            ActorSystemCmd::RegisterJob { job_id, controller } => {
+                debug!("RegisterJob with id {}", job_id);
+                let _ = job_controllers.insert(job_id, controller);
+            }
+            ActorSystemCmd::FindJob { job_id, result_tx } => {
+                debug!("FindJob with id {}", job_id);
+                let _ = result_tx.send(job_controllers.get(&job_id).cloned());
             }
         };
     }
