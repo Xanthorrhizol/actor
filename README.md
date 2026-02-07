@@ -34,14 +34,14 @@ let mut actor_system = ActorSystem::new();
 > :bulb: The actor doesn't have to use same message type. Single ActorSystem supports it.
 
 ```rust
-use crate::xan_actor::{Actor, Handler, Message, ActorError};
+use xan_actor::prelude::*;
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 pub enum MyMessage1 {
     A(String),
     C(String),
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 pub enum MyMessage2 {
     B(String),
 }
@@ -99,7 +99,7 @@ impl Actor for MyActor2 {
 
 **bounded-channel feature**
 ```rust
-use crate::xan_actor::{ErrorHandling, Blocking};
+use xan_actor::prelude::*;
 
 let actor1 = MyActor1 {
     address: "/some/address/1/1".to_string(),
@@ -119,7 +119,7 @@ actor3.register(&mut actor_system, ErrorHandling::Resume, Blocking::Blocking, No
 
 **unbounded-channel feature**
 ```rust
-use crate::xan_actor::{ErrorHandling, Blocking};
+use xan_actor::prelude::*;
 
 let actor1 = MyActor1 {
     address: "/some/address/1/1".to_string(),
