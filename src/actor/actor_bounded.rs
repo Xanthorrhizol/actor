@@ -55,9 +55,9 @@ where
         ready_tx: tokio::sync::mpsc::Sender<Result<(), ActorError>>,
         channel_size: Option<usize>,
     ) -> Result<(), ActorError> {
-        let mut restarted = false;
+        let mut is_restarted = false;
         loop {
-            if restarted {
+            if is_restarted {
                 self.post_restart().await;
             }
             let (tx, mut rx) =
@@ -72,20 +72,20 @@ where
             let result_rx = loop {
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                 if let Err(e) = actor_system_tx
-                    .send(ActorSystemCmd::Register(
-                        std::any::type_name::<Self>().to_string(),
-                        self.address().to_string(),
-                        mailbox.clone(),
-                        restart_tx.clone(),
-                        kill_tx.clone(),
-                        if restarted {
+                    .send(ActorSystemCmd::Register {
+                        actor_type: std::any::type_name::<Self>().to_string(),
+                        address: self.address().to_string(),
+                        mailbox: mailbox.clone(),
+                        restart_tx: restart_tx.clone(),
+                        kill_tx: kill_tx.clone(),
+                        life_cycle: if is_restarted {
                             LifeCycle::Restarting
                         } else {
                             LifeCycle::Starting
                         },
                         result_tx,
-                        restarted,
-                    ))
+                        is_restarted,
+                    })
                     .await
                 {
                     count += 1;
@@ -115,12 +115,12 @@ where
                 _ => {}
             }
             self.pre_start().await;
-            restarted = true;
+            is_restarted = true;
             let _ = actor_system_tx
-                .send(ActorSystemCmd::SetLifeCycle(
-                    self.address().to_string(),
-                    LifeCycle::Receiving,
-                ))
+                .send(ActorSystemCmd::SetLifeCycle {
+                    address: self.address().to_string(),
+                    life_cycle: LifeCycle::Receiving,
+                })
                 .await;
             let _ = ready_tx.send(Ok(())).await;
             if let Some(_) = loop {
@@ -163,32 +163,32 @@ where
                 };
             } {
                 let _ = actor_system_tx
-                    .send(ActorSystemCmd::SetLifeCycle(
-                        self.address().to_string(),
-                        LifeCycle::Stopping,
-                    ))
+                    .send(ActorSystemCmd::SetLifeCycle {
+                        address: self.address().to_string(),
+                        life_cycle: LifeCycle::Stopping,
+                    })
                     .await;
                 self.post_stop().await;
                 let _ = actor_system_tx
-                    .send(ActorSystemCmd::SetLifeCycle(
-                        self.address().to_string(),
-                        LifeCycle::Terminated,
-                    ))
+                    .send(ActorSystemCmd::SetLifeCycle {
+                        address: self.address().to_string(),
+                        life_cycle: LifeCycle::Terminated,
+                    })
                     .await;
                 break Ok(());
             }
             let _ = actor_system_tx
-                .send(ActorSystemCmd::SetLifeCycle(
-                    self.address().to_string(),
-                    LifeCycle::Stopping,
-                ))
+                .send(ActorSystemCmd::SetLifeCycle {
+                    address: self.address().to_string(),
+                    life_cycle: LifeCycle::Stopping,
+                })
                 .await;
             self.pre_restart().await;
             let _ = actor_system_tx
-                .send(ActorSystemCmd::SetLifeCycle(
-                    self.address().to_string(),
-                    LifeCycle::Restarting,
-                ))
+                .send(ActorSystemCmd::SetLifeCycle {
+                    address: self.address().to_string(),
+                    life_cycle: LifeCycle::Restarting,
+                })
                 .await;
         }
     }
