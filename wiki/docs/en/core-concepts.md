@@ -39,6 +39,7 @@ Addresses are plain strings, so address-to-actor-type matching is validated at r
 - mismatch returns runtime errors such as `AddressNotFound` or `MessageTypeMismatch`
 
 In short:
+
 - message type compatibility: compile time
 - address mapping compatibility: runtime
 

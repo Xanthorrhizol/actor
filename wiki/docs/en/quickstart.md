@@ -7,7 +7,8 @@ cargo add xan-actor
 cargo add async-trait
 ```
 
-`bounded-channel` is the default.  
+`bounded-channel` is the default.
+
 To use unbounded mode:
 
 ```bash

@@ -7,7 +7,8 @@ cargo add xan-actor
 cargo add async-trait
 ```
 
-`bounded-channel`이 기본입니다.  
+`bounded-channel`이 기본입니다.
+
 unbounded를 쓰려면:
 
 ```bash

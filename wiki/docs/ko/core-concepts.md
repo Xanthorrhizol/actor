@@ -39,6 +39,7 @@
 - 불일치 시 `AddressNotFound` 또는 `MessageTypeMismatch` 등으로 실패 처리
 
 정리하면:
+
 - 메시지 타입 적합성: 컴파일 타임
 - 주소-Actor 매핑 적합성: 런타임
 
