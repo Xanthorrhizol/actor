@@ -1,0 +1,37 @@
+site_name: Xan-Actor Wiki
+site_description: xan-actor project documentation wiki
+site_url: https://xanthorrhizol.github.io/actor/
+repo_url: https://github.com/Xanthorrhizol/actor
+repo_name: Xanthorrhizol/actor
+
+theme:
+  name: material
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: folder
+      languages:
+        - locale: ko
+          default: true
+          name: 한국어
+          build: true
+          nav_translations:
+            Home: 홈
+            Core Concepts: 핵심 개념
+            Architecture: 아키텍처
+            Quickstart: 빠른 시작
+        - locale: en
+          name: English
+          build: true
+
+nav:
+  - Home: index.md
+  - Core Concepts: core-concepts.md
+  - Architecture: architecture.md
+  - Quickstart: quickstart.md
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
