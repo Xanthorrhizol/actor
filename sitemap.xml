@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+    <url>
+        <loc>https://xanthorrhizol.github.io/actor/</loc>
+        <lastmod>2026-02-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://xanthorrhizol.github.io/actor/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://xanthorrhizol.github.io/actor/ko/"/>
+    </url>
+    <url>
+        <loc>https://xanthorrhizol.github.io/actor/architecture/</loc>
+        <lastmod>2026-02-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://xanthorrhizol.github.io/actor/architecture/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://xanthorrhizol.github.io/actor/ko/architecture/"/>
+    </url>
+    <url>
+        <loc>https://xanthorrhizol.github.io/actor/core-concepts/</loc>
+        <lastmod>2026-02-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://xanthorrhizol.github.io/actor/core-concepts/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://xanthorrhizol.github.io/actor/ko/core-concepts/"/>
+    </url>
+    <url>
+        <loc>https://xanthorrhizol.github.io/actor/quickstart/</loc>
+        <lastmod>2026-02-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://xanthorrhizol.github.io/actor/quickstart/"/>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://xanthorrhizol.github.io/actor/ko/quickstart/"/>
+    </url>
+    <url>
+        <loc>https://xanthorrhizol.github.io/actor/ko/</loc>
+        <lastmod>2026-02-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://xanthorrhizol.github.io/actor/ko/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://xanthorrhizol.github.io/actor/"/>
+    </url>
+    <url>
+        <loc>https://xanthorrhizol.github.io/actor/ko/architecture/</loc>
+        <lastmod>2026-02-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://xanthorrhizol.github.io/actor/ko/architecture/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://xanthorrhizol.github.io/actor/architecture/"/>
+    </url>
+    <url>
+        <loc>https://xanthorrhizol.github.io/actor/ko/core-concepts/</loc>
+        <lastmod>2026-02-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://xanthorrhizol.github.io/actor/ko/core-concepts/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://xanthorrhizol.github.io/actor/core-concepts/"/>
+    </url>
+    <url>
+        <loc>https://xanthorrhizol.github.io/actor/ko/quickstart/</loc>
+        <lastmod>2026-02-22</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="ko" href="https://xanthorrhizol.github.io/actor/ko/quickstart/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://xanthorrhizol.github.io/actor/quickstart/"/>
+    </url>
+</urlset>
