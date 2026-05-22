@@ -1,6 +1,8 @@
 pub mod actor;
 pub mod actor_system;
 mod error;
+#[cfg(feature = "multi-node")]
+pub mod inter_node;
 pub mod prelude;
 #[cfg(test)]
 mod test;
@@ -49,3 +51,18 @@ pub enum JobStatus {
     Running,
     Stopped,
 }
+
+/// Bound on `Actor::Message` / `Actor::Result`.
+///
+/// - Without `multi-node`: vacuous, every type satisfies it.
+/// - With `multi-node`: requires `xancode::Codec` so the type can be
+///   serialized across nodes.
+#[cfg(not(feature = "multi-node"))]
+pub trait MaybeCodec {}
+#[cfg(not(feature = "multi-node"))]
+impl<T: ?Sized> MaybeCodec for T {}
+
+#[cfg(feature = "multi-node")]
+pub trait MaybeCodec: xancode::Codec {}
+#[cfg(feature = "multi-node")]
+impl<T: xancode::Codec> MaybeCodec for T {}

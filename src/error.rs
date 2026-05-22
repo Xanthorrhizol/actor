@@ -28,4 +28,23 @@ pub enum ActorError {
     UnhealthyActorSystem,
     #[error("Message type mismatch")]
     MessageTypeMismatch,
+
+    #[cfg(feature = "multi-node")]
+    #[error("Inter-node IO error: {0}")]
+    InterNodeIo(String),
+    #[cfg(feature = "multi-node")]
+    #[error("Inter-node decode error: {0}")]
+    InterNodeDecode(String),
+    #[cfg(feature = "multi-node")]
+    #[error("Inter-node decoder not registered for actor type {0}")]
+    InterNodeDecoderMissing(String),
+    #[cfg(feature = "multi-node")]
+    #[error("Inter-node remote error: {0}")]
+    InterNodeRemote(String),
+    #[cfg(feature = "multi-node")]
+    #[error("Inter-node not configured")]
+    InterNodeNotConfigured,
+    #[cfg(feature = "multi-node")]
+    #[error("Address {0} is not owned by this node")]
+    AddressNotOwned(String),
 }

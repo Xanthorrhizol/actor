@@ -27,7 +27,26 @@ where
     type Error: std::fmt::Debug + std::fmt::Display + Send;
 
     /// The address of the actor, which is a unique identifier for the actor in the actor system.
+    #[cfg(not(feature = "multi-node"))]
     fn address(&self) -> &str;
+    /// The address of the actor. With `multi-node` enabled, this is a fully
+    /// qualified `Address { name, node }`; the registering `ActorSystem` will
+    /// reject the registration if `node` doesn't match its own node name.
+    #[cfg(feature = "multi-node")]
+    fn address(&self) -> &crate::inter_node::Address;
+
+    /// Internal helper: the local name part of this actor's address.
+    #[doc(hidden)]
+    fn local_name(&self) -> &str {
+        #[cfg(not(feature = "multi-node"))]
+        {
+            self.address()
+        }
+        #[cfg(feature = "multi-node")]
+        {
+            &self.address().name
+        }
+    }
 
     /// Handles incoming messages sent to the actor.
     async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error>;
@@ -69,7 +88,10 @@ where
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
                 if let Err(e) = actor_system_tx.send(ActorSystemCmd::Register {
                     actor_type: std::any::type_name::<Self>().to_string(),
-                    address: self.address().to_string(),
+                    #[cfg(not(feature = "multi-node"))]
+                    address: self.local_name().to_string(),
+                    #[cfg(feature = "multi-node")]
+                    address: self.address().clone(),
                     mailbox: mailbox.clone(),
                     restart_tx: restart_tx.clone(),
                     kill_tx: kill_tx.clone(),
@@ -84,7 +106,7 @@ where
                     count += 1;
                     error!(
                         "Failed to register actor {}...({}): {:?}",
-                        self.address(),
+                        self.local_name(),
                         count,
                         e
                     );
@@ -99,7 +121,7 @@ where
                 Ok(Err(e)) => {
                     let _ = ready_tx.send(Err(e));
                     // Now, this case is only when the address already exists.
-                    return Err(ActorError::AddressAlreadyExist(self.address().to_string()));
+                    return Err(ActorError::AddressAlreadyExist(self.local_name().to_string()));
                 }
                 Err(e) => {
                     let _ = ready_tx.send(Err(ActorError::from(e)));
@@ -110,7 +132,7 @@ where
             self.pre_start().await;
             is_restarted = true;
             let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle {
-                address: self.address().to_string(),
+                address: self.local_name().to_string(),
                 life_cycle: LifeCycle::Receiving,
             });
             let _ = ready_tx.send(Ok(()));
@@ -144,33 +166,33 @@ where
                        }
                     }
                     Some(_) = kill_rx.recv() => {
-                        info!("Kill actor: address={}", self.address());
+                        info!("Kill actor: address={}", self.local_name());
                         break Some(());
                     }
                     Some(_) = restart_rx.recv() => {
-                        info!("Restart actor: address={}", self.address());
+                        info!("Restart actor: address={}", self.local_name());
                         break None;
                     }
                 };
             } {
                 let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle {
-                    address: self.address().to_string(),
+                    address: self.local_name().to_string(),
                     life_cycle: LifeCycle::Stopping,
                 });
                 self.post_stop().await;
                 let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle {
-                    address: self.address().to_string(),
+                    address: self.local_name().to_string(),
                     life_cycle: LifeCycle::Terminated,
                 });
                 break Ok(());
             }
             let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle {
-                address: self.address().to_string(),
+                address: self.local_name().to_string(),
                 life_cycle: LifeCycle::Stopping,
             });
             self.pre_restart().await;
             let _ = actor_system_tx.send(ActorSystemCmd::SetLifeCycle {
-                address: self.address().to_string(),
+                address: self.local_name().to_string(),
                 life_cycle: LifeCycle::Restarting,
             });
         }
@@ -193,14 +215,14 @@ where
                     tx,
                 ));
                 if let Err(e) = result {
-                    error!("Actor {} run failed: {:?}", self.address(), e);
+                    error!("Actor {} run failed: {:?}", self.local_name(), e);
                 }
             })
         } else {
             tokio::spawn(async move {
                 let result = self.run_actor(actor_system_tx, error_handling, tx).await;
                 if let Err(e) = result {
-                    error!("Actor {} run failed: {:?}", self.address(), e);
+                    error!("Actor {} run failed: {:?}", self.local_name(), e);
                 }
             })
         };

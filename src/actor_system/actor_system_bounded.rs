@@ -1,15 +1,22 @@
 use crate::{
-    Actor, ActorError, CHANNEL_SIZE, JobController, JobSpec, LifeCycle, Mailbox, RunJobResult,
+    Actor, ActorError, CHANNEL_SIZE, JobController, JobSpec, LifeCycle, Mailbox, MaybeCodec,
+    RunJobResult,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+#[cfg(feature = "multi-node")]
+use crate::inter_node::InterNodeRuntime;
 
 /// Commands for the ActorSystem to handle various operations
 /// You can send these commands to the ActorSystem's handler channel directly.
 pub enum ActorSystemCmd {
     Register {
         actor_type: String,
+        #[cfg(not(feature = "multi-node"))]
         address: String,
+        #[cfg(feature = "multi-node")]
+        address: crate::inter_node::Address,
         mailbox: Arc<dyn Mailbox>,
         restart_tx: tokio::sync::mpsc::Sender<()>,
         kill_tx: tokio::sync::mpsc::Sender<()>,
@@ -46,6 +53,12 @@ pub enum ActorSystemCmd {
         job_id: String,
         result_tx: tokio::sync::oneshot::Sender<Option<JobController>>,
     },
+    /// Snapshot of the currently registered `(actor_type, address)` pairs.
+    /// Used by the inter-node discovery handler to answer `QueryAll`.
+    #[cfg(feature = "multi-node")]
+    ListLocal {
+        result_tx: tokio::sync::oneshot::Sender<Vec<(String, String)>>,
+    },
 }
 
 #[derive(Clone)]
@@ -56,8 +69,16 @@ pub struct ActorSystem {
     handler_tx: tokio::sync::mpsc::Sender<ActorSystemCmd>,
     cache: HashMap<String, (String, Arc<dyn Mailbox>)>,
     channel_size: usize,
+    /// The cluster identity of this system. Always set when `multi-node` is on.
+    #[cfg(feature = "multi-node")]
+    node_name: String,
+    /// Some when a broker connection was provided; None means local-only
+    /// (sends to other nodes will fail with `InterNodeNotConfigured`).
+    #[cfg(feature = "multi-node")]
+    inter_node: Option<InterNodeRuntime>,
 }
 
+#[cfg(not(feature = "multi-node"))]
 impl Default for ActorSystem {
     fn default() -> Self {
         let (handler_tx, handler_rx) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
@@ -72,7 +93,12 @@ impl Default for ActorSystem {
 }
 
 impl ActorSystem {
-    /// Creates a new ActorSystem instance
+    /// Creates a new ActorSystem instance.
+    ///
+    /// With the `multi-node` feature enabled, pass `cluster = Some((node_name, broker_addr))`
+    /// to connect to a xanq broker and participate in inter-node delivery; pass `None` to
+    /// run the system in single-node mode under the same feature flag.
+    #[cfg(not(feature = "multi-node"))]
     pub fn new(channel_size: Option<usize>) -> Self {
         let (handler_tx, handler_rx) =
             tokio::sync::mpsc::channel(channel_size.unwrap_or(CHANNEL_SIZE));
@@ -85,6 +111,253 @@ impl ActorSystem {
         me
     }
 
+    #[cfg(feature = "multi-node")]
+    pub async fn new(
+        channel_size: Option<usize>,
+        node_name: String,
+        broker_addr: Option<String>,
+    ) -> Result<Self, ActorError> {
+        let (handler_tx, handler_rx) =
+            tokio::sync::mpsc::channel(channel_size.unwrap_or(CHANNEL_SIZE));
+        let inter_node = match broker_addr {
+            Some(addr) => Some(InterNodeRuntime::connect(node_name.clone(), addr).await?),
+            None => None,
+        };
+        let mut me = Self {
+            handler_tx,
+            cache: HashMap::new(),
+            channel_size: channel_size.unwrap_or(CHANNEL_SIZE),
+            node_name,
+            inter_node: inter_node.clone(),
+        };
+        me.run(handler_rx);
+        if let Some(rt) = inter_node {
+            rt.start_consumers(me.clone()).await?;
+        }
+        Ok(me)
+    }
+
+    /// This system's cluster node name (set during `new`).
+    #[cfg(feature = "multi-node")]
+    pub fn node_name(&self) -> &str {
+        &self.node_name
+    }
+
+    /// Look up a local actor by `(actor_type, name)` and forward the
+    /// already-decoded payload. Used by the inter-node request consumer.
+    #[cfg(feature = "multi-node")]
+    pub async fn dispatch_local_any(
+        &self,
+        actor_type: String,
+        address: String,
+        payload: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Result<(), ActorError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .handler_tx
+            .send(ActorSystemCmd::FindActor {
+                actor_type,
+                address: address.clone(),
+                result_tx: tx,
+            })
+            .await;
+        if let Ok(Some((mailbox, ready))) = rx.await {
+            if ready {
+                mailbox.send(payload).await
+            } else {
+                Err(ActorError::ActorNotReady(address))
+            }
+        } else {
+            Err(ActorError::AddressNotFound(address))
+        }
+    }
+
+    #[cfg(feature = "multi-node")]
+    pub async fn dispatch_local_any_and_recv(
+        &self,
+        actor_type: String,
+        address: String,
+        payload: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Result<Box<dyn std::any::Any + Send>, ActorError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .handler_tx
+            .send(ActorSystemCmd::FindActor {
+                actor_type,
+                address: address.clone(),
+                result_tx: tx,
+            })
+            .await;
+        if let Ok(Some((mailbox, ready))) = rx.await {
+            if ready {
+                mailbox.send_and_recv(payload).await
+            } else {
+                Err(ActorError::ActorNotReady(address))
+            }
+        } else {
+            Err(ActorError::AddressNotFound(address))
+        }
+    }
+
+    /// Inter-node variant of `run_job`. Encodes the payload once, then spawns
+    /// a loop that drives the remote actor over the xanq broker on the same
+    /// `JobSpec` schedule and exposes the same `JobController`.
+    #[cfg(feature = "multi-node")]
+    async fn spawn_remote_job<T>(
+        &self,
+        address: crate::inter_node::Address,
+        subscribe: bool,
+        job: JobSpec,
+        msg: <T as Actor>::Message,
+        job_id: String,
+        rt: crate::inter_node::InterNodeRuntime,
+    ) -> Result<RunJobResult<T>, ActorError>
+    where
+        T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+        <T as Actor>::Result: MaybeCodec,
+    {
+        let payload_bytes = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
+        let actor_type = std::any::type_name::<T>().to_string();
+        let channel_size = self.channel_size;
+
+        let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(channel_size);
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(channel_size);
+        let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(channel_size);
+
+        let result_subscriber_rx = if subscribe {
+            let (sub_tx, sub_rx) = tokio::sync::mpsc::channel(channel_size);
+            let rt = rt.clone();
+            let address = address.clone();
+            let actor_type = actor_type.clone();
+            let payload_bytes = payload_bytes.clone();
+            tokio::spawn(async move {
+                let mut i = 0usize;
+                if let Some(interval) = job.interval() {
+                    loop {
+                        if abort_rx.try_recv().is_ok() {
+                            drop(sub_tx);
+                            return;
+                        }
+                        if stop_rx.try_recv().is_ok() {
+                            resume_rx.recv().await;
+                        }
+                        if job.start_at() <= std::time::SystemTime::now() {
+                            i += 1;
+                            let outcome: Result<<T as Actor>::Result, ActorError> = match rt
+                                .call(&address, &actor_type, payload_bytes.clone())
+                                .await
+                            {
+                                Ok(bytes) => <<T as Actor>::Result as xancode::Codec>::decode(
+                                    &xancode::Bytes::copy_from_slice(&bytes),
+                                )
+                                .map_err(|_| {
+                                    ActorError::InterNodeDecode(format!(
+                                        "decode failed for {}",
+                                        std::any::type_name::<<T as Actor>::Result>()
+                                    ))
+                                }),
+                                Err(e) => Err(e),
+                            };
+                            let _ = sub_tx.send(outcome).await;
+                            tokio::time::sleep(interval).await;
+                            if let Some(max_iter) = job.max_iter() {
+                                if i >= max_iter {
+                                    drop(sub_tx);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if abort_rx.try_recv().is_ok() {
+                        drop(sub_tx);
+                        return;
+                    }
+                    if stop_rx.try_recv().is_ok() {
+                        resume_rx.recv().await;
+                    }
+                    if job.start_at() <= std::time::SystemTime::now() {
+                        let outcome: Result<<T as Actor>::Result, ActorError> = match rt
+                            .call(&address, &actor_type, payload_bytes)
+                            .await
+                        {
+                            Ok(bytes) => <<T as Actor>::Result as xancode::Codec>::decode(
+                                &xancode::Bytes::copy_from_slice(&bytes),
+                            )
+                            .map_err(|_| {
+                                ActorError::InterNodeDecode(format!(
+                                    "decode failed for {}",
+                                    std::any::type_name::<<T as Actor>::Result>()
+                                ))
+                            }),
+                            Err(e) => Err(e),
+                        };
+                        let _ = sub_tx.send(outcome).await;
+                    }
+                }
+            });
+            Some(sub_rx)
+        } else {
+            let rt = rt.clone();
+            tokio::spawn(async move {
+                let mut i = 0usize;
+                if let Some(interval) = job.interval() {
+                    loop {
+                        if abort_rx.try_recv().is_ok() {
+                            return;
+                        }
+                        if stop_rx.try_recv().is_ok() {
+                            resume_rx.recv().await;
+                        }
+                        if job.start_at() <= std::time::SystemTime::now() {
+                            i += 1;
+                            let _ = rt
+                                .fire(&address, &actor_type, payload_bytes.clone())
+                                .await;
+                            tokio::time::sleep(interval).await;
+                            if let Some(max_iter) = job.max_iter() {
+                                if i >= max_iter {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if abort_rx.try_recv().is_ok() {
+                        return;
+                    }
+                    if stop_rx.try_recv().is_ok() {
+                        resume_rx.recv().await;
+                    }
+                    if job.start_at() <= std::time::SystemTime::now() {
+                        let _ = rt
+                            .fire(&address, &actor_type, payload_bytes)
+                            .await;
+                    }
+                }
+            });
+            None
+        };
+
+        let _ = self
+            .handler_tx
+            .send(ActorSystemCmd::RegisterJob {
+                job_id: job_id.clone(),
+                controller: JobController {
+                    abort_tx,
+                    stop_tx,
+                    resume_tx,
+                },
+            })
+            .await;
+
+        Ok(RunJobResult {
+            job_id,
+            result_subscriber_rx,
+        })
+    }
+
     /// Returns the handler channel sender for the ActorSystem.
     /// You can use this to send commands to the ActorSystem directly.
     pub fn handler_tx(&self) -> tokio::sync::mpsc::Sender<ActorSystemCmd> {
@@ -92,7 +365,7 @@ impl ActorSystem {
     }
 
     /// Filters the addresses of actors based on a regex pattern.
-    pub async fn filter_address(&mut self, address_regex: String) -> Vec<String> {
+    pub async fn filter_address(&self, address_regex: String) -> Vec<String> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
@@ -134,12 +407,29 @@ impl ActorSystem {
     /// It doesn't wait for the actor to be ready.
     pub async fn send<T>(
         &mut self,
-        address: String,
+        #[cfg(not(feature = "multi-node"))] address: String,
+        #[cfg(feature = "multi-node")] address: crate::inter_node::Address,
         msg: <T as Actor>::Message,
     ) -> Result<(), ActorError>
     where
         T: Actor,
+        <T as Actor>::Message: MaybeCodec,
     {
+        #[cfg(feature = "multi-node")]
+        if address.node != self.node_name {
+            let rt = self
+                .inter_node
+                .as_ref()
+                .ok_or(ActorError::InterNodeNotConfigured)?
+                .clone();
+            let payload = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
+            return rt
+                .fire(&address, std::any::type_name::<T>(), payload)
+                .await;
+        }
+        #[cfg(feature = "multi-node")]
+        let address: String = address.name;
+
         let mut retry_count = 0;
         let actor_type = std::any::type_name::<T>();
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
@@ -215,12 +505,29 @@ impl ActorSystem {
     /// It doesn't cache the actor's tx for future use.
     pub async fn send_without_tx_cache<T>(
         &self,
-        address: String,
+        #[cfg(not(feature = "multi-node"))] address: String,
+        #[cfg(feature = "multi-node")] address: crate::inter_node::Address,
         msg: <T as Actor>::Message,
     ) -> Result<(), ActorError>
     where
         T: Actor,
+        <T as Actor>::Message: MaybeCodec,
     {
+        #[cfg(feature = "multi-node")]
+        if address.node != self.node_name {
+            let rt = self
+                .inter_node
+                .as_ref()
+                .ok_or(ActorError::InterNodeNotConfigured)?
+                .clone();
+            let payload = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
+            return rt
+                .fire(&address, std::any::type_name::<T>(), payload)
+                .await;
+        }
+        #[cfg(feature = "multi-node")]
+        let address: String = address.name;
+
         let mut retry_count = 0;
         let actor_type = std::any::type_name::<T>();
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
@@ -264,13 +571,65 @@ impl ActorSystem {
     pub async fn send_broadcast<T>(
         &mut self,
         address_regex: String,
+        #[cfg(feature = "multi-node")] filter: crate::inter_node::NodeFilter,
         msg: <T as Actor>::Message,
     ) -> Vec<Result<(), ActorError>>
     where
         T: Actor,
+        <T as Actor>::Message: MaybeCodec,
     {
-        let (tx, rx) = tokio::sync::oneshot::channel();
         let actor_type = std::any::type_name::<T>();
+
+        #[cfg(feature = "multi-node")]
+        let (run_local, remote_nodes): (bool, Vec<String>) = {
+            use crate::inter_node::NodeFilter;
+            use std::collections::HashSet;
+            let raw: Vec<String> = match filter {
+                NodeFilter::SelfOnly => vec![self.node_name.clone()],
+                NodeFilter::Node(n) => vec![n],
+                NodeFilter::Peers(ns) => ns,
+            };
+            let mut seen = HashSet::new();
+            let mut local = false;
+            let mut remote = Vec::new();
+            for node in raw {
+                if !seen.insert(node.clone()) {
+                    continue;
+                }
+                if node == self.node_name {
+                    local = true;
+                } else {
+                    remote.push(node);
+                }
+            }
+            (local, remote)
+        };
+
+        #[cfg(feature = "multi-node")]
+        let mut remote_results: Vec<Result<(), ActorError>> = if !remote_nodes.is_empty() {
+            let rt = match self.inter_node.as_ref() {
+                Some(rt) => rt.clone(),
+                None => return vec![Err(ActorError::InterNodeNotConfigured)],
+            };
+            let bytes = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
+            let mut out = Vec::new();
+            for node in &remote_nodes {
+                out.push(
+                    rt.broadcast_fire(node, actor_type, &address_regex, bytes.clone())
+                        .await,
+                );
+            }
+            out
+        } else {
+            Vec::new()
+        };
+
+        #[cfg(feature = "multi-node")]
+        if !run_local {
+            return remote_results;
+        }
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FilterAddress {
@@ -358,6 +717,14 @@ impl ActorSystem {
                 }
             }
         }
+
+        #[cfg(feature = "multi-node")]
+        {
+            remote_results.extend(result);
+            return remote_results;
+        }
+
+        #[cfg(not(feature = "multi-node"))]
         result
     }
 
@@ -368,13 +735,65 @@ impl ActorSystem {
     pub async fn send_broadcast_without_tx_cache<T>(
         &self,
         address_regex: String,
+        #[cfg(feature = "multi-node")] filter: crate::inter_node::NodeFilter,
         msg: <T as Actor>::Message,
     ) -> Vec<Result<(), ActorError>>
     where
         T: Actor,
+        <T as Actor>::Message: MaybeCodec,
     {
-        let (tx, rx) = tokio::sync::oneshot::channel();
         let actor_type = std::any::type_name::<T>();
+
+        #[cfg(feature = "multi-node")]
+        let (run_local, remote_nodes): (bool, Vec<String>) = {
+            use crate::inter_node::NodeFilter;
+            use std::collections::HashSet;
+            let raw: Vec<String> = match filter {
+                NodeFilter::SelfOnly => vec![self.node_name.clone()],
+                NodeFilter::Node(n) => vec![n],
+                NodeFilter::Peers(ns) => ns,
+            };
+            let mut seen = HashSet::new();
+            let mut local = false;
+            let mut remote = Vec::new();
+            for node in raw {
+                if !seen.insert(node.clone()) {
+                    continue;
+                }
+                if node == self.node_name {
+                    local = true;
+                } else {
+                    remote.push(node);
+                }
+            }
+            (local, remote)
+        };
+
+        #[cfg(feature = "multi-node")]
+        let mut remote_results: Vec<Result<(), ActorError>> = if !remote_nodes.is_empty() {
+            let rt = match self.inter_node.as_ref() {
+                Some(rt) => rt.clone(),
+                None => return vec![Err(ActorError::InterNodeNotConfigured)],
+            };
+            let bytes = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
+            let mut out = Vec::new();
+            for node in &remote_nodes {
+                out.push(
+                    rt.broadcast_fire(node, actor_type, &address_regex, bytes.clone())
+                        .await,
+                );
+            }
+            out
+        } else {
+            Vec::new()
+        };
+
+        #[cfg(feature = "multi-node")]
+        if !run_local {
+            return remote_results;
+        }
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::FilterAddress {
@@ -428,18 +847,54 @@ impl ActorSystem {
                 }
             }
         }
+
+        #[cfg(feature = "multi-node")]
+        {
+            remote_results.extend(result);
+            return remote_results;
+        }
+
+        #[cfg(not(feature = "multi-node"))]
         result
     }
 
     /// Sends a message to a specific actor and waits for the result.
     pub async fn send_and_recv<T>(
         &mut self,
-        address: String,
+        #[cfg(not(feature = "multi-node"))] address: String,
+        #[cfg(feature = "multi-node")] address: crate::inter_node::Address,
         msg: <T as Actor>::Message,
     ) -> Result<<T as Actor>::Result, ActorError>
     where
         T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+        <T as Actor>::Result: MaybeCodec,
     {
+        #[cfg(feature = "multi-node")]
+        if address.node != self.node_name {
+            let rt = self
+                .inter_node
+                .as_ref()
+                .ok_or(ActorError::InterNodeNotConfigured)?
+                .clone();
+            let payload = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
+            let bytes = rt
+                .call(&address, std::any::type_name::<T>(), payload)
+                .await?;
+            let result = <<T as Actor>::Result as xancode::Codec>::decode(
+                &xancode::Bytes::copy_from_slice(&bytes),
+            )
+            .map_err(|_| {
+                ActorError::InterNodeDecode(format!(
+                    "decode failed for {}",
+                    std::any::type_name::<<T as Actor>::Result>()
+                ))
+            })?;
+            return Ok(result);
+        }
+        #[cfg(feature = "multi-node")]
+        let address: String = address.name;
+
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
         let actor_type = std::any::type_name::<T>();
         let mut retry_count = 0;
@@ -520,12 +975,40 @@ impl ActorSystem {
     /// It doesn't cache the actor's tx for future use.
     pub async fn send_and_recv_without_tx_cache<T>(
         &self,
-        address: String,
+        #[cfg(not(feature = "multi-node"))] address: String,
+        #[cfg(feature = "multi-node")] address: crate::inter_node::Address,
         msg: <T as Actor>::Message,
     ) -> Result<<T as Actor>::Result, ActorError>
     where
         T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+        <T as Actor>::Result: MaybeCodec,
     {
+        #[cfg(feature = "multi-node")]
+        if address.node != self.node_name {
+            let rt = self
+                .inter_node
+                .as_ref()
+                .ok_or(ActorError::InterNodeNotConfigured)?
+                .clone();
+            let payload = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
+            let bytes = rt
+                .call(&address, std::any::type_name::<T>(), payload)
+                .await?;
+            let result = <<T as Actor>::Result as xancode::Codec>::decode(
+                &xancode::Bytes::copy_from_slice(&bytes),
+            )
+            .map_err(|_| {
+                ActorError::InterNodeDecode(format!(
+                    "decode failed for {}",
+                    std::any::type_name::<<T as Actor>::Result>()
+                ))
+            })?;
+            return Ok(result);
+        }
+        #[cfg(feature = "multi-node")]
+        let address: String = address.name;
+
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
         let actor_type = std::any::type_name::<T>();
         let mut retry_count = 0;
@@ -572,7 +1055,8 @@ impl ActorSystem {
     /// If you want to set a job_id, set it to `Some(job_id)`.
     pub async fn run_job<T>(
         &mut self,
-        address: String,
+        #[cfg(not(feature = "multi-node"))] address: String,
+        #[cfg(feature = "multi-node")] address: crate::inter_node::Address,
         subscribe: bool,
         job: JobSpec,
         msg: <T as Actor>::Message,
@@ -580,8 +1064,25 @@ impl ActorSystem {
     ) -> Result<RunJobResult<T>, ActorError>
     where
         T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+        <T as Actor>::Result: MaybeCodec,
     {
         let job_id = job_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        #[cfg(feature = "multi-node")]
+        if address.node != self.node_name {
+            let rt = self
+                .inter_node
+                .as_ref()
+                .ok_or(ActorError::InterNodeNotConfigured)?
+                .clone();
+            return self
+                .spawn_remote_job::<T>(address, subscribe, job, msg, job_id, rt)
+                .await;
+        }
+        #[cfg(feature = "multi-node")]
+        let address: String = address.name;
+
         let mut retry_count = 0;
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
         let actor_type = std::any::type_name::<T>();
@@ -760,7 +1261,8 @@ impl ActorSystem {
     /// If you want to set a job_id, set it to `Some(job_id)`.
     pub async fn run_job_without_tx_cache<T>(
         &self,
-        address: String,
+        #[cfg(not(feature = "multi-node"))] address: String,
+        #[cfg(feature = "multi-node")] address: crate::inter_node::Address,
         subscribe: bool,
         job: JobSpec,
         msg: <T as Actor>::Message,
@@ -768,8 +1270,25 @@ impl ActorSystem {
     ) -> Result<RunJobResult<T>, ActorError>
     where
         T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+        <T as Actor>::Result: MaybeCodec,
     {
         let job_id = job_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        #[cfg(feature = "multi-node")]
+        if address.node != self.node_name {
+            let rt = self
+                .inter_node
+                .as_ref()
+                .ok_or(ActorError::InterNodeNotConfigured)?
+                .clone();
+            return self
+                .spawn_remote_job::<T>(address, subscribe, job, msg, job_id, rt)
+                .await;
+        }
+        #[cfg(feature = "multi-node")]
+        let address: String = address.name;
+
         let mut retry_count = 0;
         let payload: Arc<dyn std::any::Any + Send + Sync> = Arc::new(msg);
         let actor_type = std::any::type_name::<T>();
@@ -1009,15 +1528,24 @@ impl ActorSystem {
         &mut self,
         handler_rx: tokio::sync::mpsc::Receiver<ActorSystemCmd>,
     ) -> tokio::task::JoinHandle<()> {
-        let handle = tokio::task::spawn_blocking(|| {
-            tokio::runtime::Handle::current().block_on(actor_system_loop(handler_rx))
+        #[cfg(feature = "multi-node")]
+        let inter_node = self.inter_node.clone();
+        let handle = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(actor_system_loop(
+                handler_rx,
+                #[cfg(feature = "multi-node")]
+                inter_node,
+            ))
         });
         handle
     }
 }
 
 // {{{ fn actor_system_loop
-async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::Receiver<ActorSystemCmd>) {
+async fn actor_system_loop(
+    mut handler_rx: tokio::sync::mpsc::Receiver<ActorSystemCmd>,
+    #[cfg(feature = "multi-node")] inter_node: Option<InterNodeRuntime>,
+) {
     let mut address_list = HashSet::<String>::new();
     let mut actor_map = HashMap::<
         String,
@@ -1042,19 +1570,32 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::Receiver<ActorSyst
                 result_tx,
                 is_restarted,
             } => {
+                #[cfg(not(feature = "multi-node"))]
+                let name: String = address;
+                #[cfg(feature = "multi-node")]
+                let name: String = {
+                    if let Some(rt) = inter_node.as_ref() {
+                        if address.node != rt.node_name() {
+                            let _ = result_tx
+                                .send(Err(ActorError::AddressNotOwned(address.to_string())));
+                            continue;
+                        }
+                    }
+                    address.name
+                };
                 debug!(
                     "Register actor with address {} with type {}",
-                    address, actor_type
+                    name, actor_type
                 );
-                if actor_map.contains_key(&address) && !is_restarted {
-                    let _ = result_tx.send(Err(ActorError::AddressAlreadyExist(address)));
+                if actor_map.contains_key(&name) && !is_restarted {
+                    let _ = result_tx.send(Err(ActorError::AddressAlreadyExist(name)));
                     continue;
                 }
                 actor_map.insert(
-                    address.clone(),
+                    name.clone(),
                     (actor_type, mailbox, restart_tx, kill_tx, life_cycle),
                 );
-                address_list.insert(address);
+                address_list.insert(name);
                 let _ = result_tx.send(Ok(()));
             }
             ActorSystemCmd::Restart { address_regex } => {
@@ -1158,6 +1699,11 @@ async fn actor_system_loop(mut handler_rx: tokio::sync::mpsc::Receiver<ActorSyst
             ActorSystemCmd::FindJob { job_id, result_tx } => {
                 debug!("FindJob with id {}", job_id);
                 let _ = result_tx.send(job_controllers.get(&job_id).cloned());
+            }
+            #[cfg(feature = "multi-node")]
+            ActorSystemCmd::ListLocal { result_tx: _result_tx } => {
+                // ListLocal is no longer used after auto-discovery was removed,
+                // but the variant is kept so older messages still match. No-op.
             }
         };
     }

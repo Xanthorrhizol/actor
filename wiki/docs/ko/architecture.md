@@ -46,3 +46,21 @@ Caller
 - `unbounded-channel`: `tokio::sync::mpsc::unbounded_channel()`
 
 API 형태는 동일하고 내부 채널 타입만 달라집니다.
+
+## 노드 간 전송 (선택)
+
+`multi-node` feature가 켜지면 주소가 `Address { name, node }` 구조체가 되고,
+`ActorSystem`은 `node_name`과 xanq 브로커에 연결된 선택적 `InterNodeRuntime`을
+갖습니다. 모든 send/job 진입점은 주소 자체로 라우팅합니다.
+
+- `address.node == self.node_name` → 기존 로컬 mailbox 경로, 인코딩 없음
+- 그 외 → payload 인코드 후 브로커 경유 fire/call
+
+노드 간 주소 유일성은 구조적입니다 — 두 시스템이 물리적으로 같은 `Address`를
+등록할 수 없습니다(`node` 필드가 다르므로). 디스커버리 프로토콜이나 공유
+디렉터리, race window가 없습니다 — 라우팅은 주소 자체로 결정됩니다.
+
+`JobController`(`abort_job` / `stop_job` / `resume_job`)와 메서드 이름은 로컬과
+원격 모두 동일하게 동작합니다. `send_broadcast`는 `NodeFilter`(`SelfOnly` /
+`Node(name)` / `Peers(Vec<name>)`)를 받아 호출자가 fan-out 대상 노드를 선언합니다.
+와이어 프로토콜과 셋업은 [Multi-node](multi-node.md) 페이지를 참고하세요.

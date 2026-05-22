@@ -44,3 +44,24 @@ Feature flags expose the same API over different channel backends.
 
 - `bounded-channel` (default): `tokio::sync::mpsc::channel(size)`
 - `unbounded-channel`: `tokio::sync::mpsc::unbounded_channel()`
+
+## Inter-node Delivery (optional)
+
+With the `multi-node` feature enabled, addresses become structs
+`Address { name, node }` and `ActorSystem` carries a `node_name` plus an
+optional `InterNodeRuntime` connected to a xanq broker. Every send/job entry
+point routes based on the address itself:
+
+- `address.node == self.node_name` → existing local mailbox flow, no encoding
+- otherwise → encode payload, fire/call over the broker
+
+Cross-node uniqueness is structural — two systems cannot physically register
+the same `Address` because the `node` fields differ. There is no discovery
+protocol, no shared directory, and no race window: routing is decided by the
+address itself.
+
+The same `JobController` (`abort_job` / `stop_job` / `resume_job`) and the
+same method names work for both local and remote actors. `send_broadcast`
+takes a `NodeFilter` (`SelfOnly` / `Node(name)` / `Peers(Vec<name>)`) so the
+caller declares which nodes to fan out to. See the
+[Multi-node](multi-node.md) page for the wire protocol and setup steps.
