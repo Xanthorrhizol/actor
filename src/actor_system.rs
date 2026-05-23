@@ -1210,6 +1210,69 @@ impl ActorSystem {
         }
     }
 
+    /// `send_and_recv` with a wall-clock deadline. Returns
+    /// [`ActorError::Timeout`] if the reply doesn't arrive within
+    /// `timeout`.
+    ///
+    /// Useful under `multi-node` where a dead peer would otherwise leave
+    /// the call awaiting a response that will never arrive — the
+    /// underlying `oneshot` waiter can only fire when the remote sends a
+    /// response back, so there's no implicit failure detection on the
+    /// network path. Applies to the local path too: a slow `handle`
+    /// implementation gets cut off the same way.
+    ///
+    /// Cancellation: when `timeout` fires the inner future is dropped.
+    /// For cross-node calls the dispatcher's pending-requests entry is
+    /// reclaimed via a `Drop` guard, so a late-arriving response is
+    /// silently discarded rather than leaking.
+    ///
+    /// Takes `&mut self` (unlike the `_without_tx_cache` variant) because
+    /// the wrapped `send_and_recv` mutates the per-clone TX cache.
+    pub async fn send_and_recv_with_timeout<T>(
+        &mut self,
+        #[cfg(not(feature = "multi-node"))] address: String,
+        #[cfg(feature = "multi-node")] address: crate::inter_node::Address,
+        msg: <T as Actor>::Message,
+        timeout: std::time::Duration,
+    ) -> Result<<T as Actor>::Result, ActorError>
+    where
+        T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+        <T as Actor>::Result: MaybeCodec,
+    {
+        match tokio::time::timeout(timeout, self.send_and_recv::<T>(address, msg)).await {
+            Ok(result) => result,
+            Err(_) => Err(ActorError::Timeout(timeout)),
+        }
+    }
+
+    /// Cache-bypassing variant of [`send_and_recv_with_timeout`]. Same
+    /// timeout semantics; same cleanup on the cross-node path.
+    ///
+    /// [`send_and_recv_with_timeout`]: Self::send_and_recv_with_timeout
+    pub async fn send_and_recv_without_tx_cache_with_timeout<T>(
+        &self,
+        #[cfg(not(feature = "multi-node"))] address: String,
+        #[cfg(feature = "multi-node")] address: crate::inter_node::Address,
+        msg: <T as Actor>::Message,
+        timeout: std::time::Duration,
+    ) -> Result<<T as Actor>::Result, ActorError>
+    where
+        T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+        <T as Actor>::Result: MaybeCodec,
+    {
+        match tokio::time::timeout(
+            timeout,
+            self.send_and_recv_without_tx_cache::<T>(address, msg),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(ActorError::Timeout(timeout)),
+        }
+    }
+
     /// Spawn a background job that delivers `msg` to `address` on the
     /// schedule described by [`JobSpec`].
     ///

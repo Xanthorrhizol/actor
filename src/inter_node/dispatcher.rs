@@ -115,13 +115,22 @@ impl InterNodeRuntime {
     ) -> Result<Vec<u8>, ActorError> {
         let req_id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        {
+        // Insert and arm the cleanup guard in the same locked region so
+        // there's no window in which the entry could survive a panic or
+        // early return without the `Drop` reclaiming it. The guard
+        // handles every exit path from here on — return-on-error,
+        // return-on-response, and cancel-by-timeout.
+        let _guard = {
             let mut map = self
                 .pending
                 .lock()
                 .map_err(|_| ActorError::InterNodeRemote("pending map poisoned".into()))?;
             map.insert(req_id, tx);
-        }
+            PendingGuard {
+                pending: self.pending.clone(),
+                req_id,
+            }
+        };
         let envelope = InterNodeMessage::Call {
             actor_type: actor_type.to_string(),
             target_name: target.name.clone(),
@@ -134,9 +143,6 @@ impl InterNodeRuntime {
             .produce(&Topic::request(&target.node), envelope)
             .await
         {
-            if let Ok(mut map) = self.pending.lock() {
-                map.remove(&req_id);
-            }
             return Err(ActorError::InterNodeIo(e.to_string()));
         }
         let outcome = rx
@@ -248,6 +254,25 @@ impl InterNodeRuntime {
         });
 
         Ok(())
+    }
+}
+
+/// RAII cleanup for an entry in [`InterNodeRuntime`]'s pending-requests
+/// map. Drops the entry on scope exit whether the call returned an error,
+/// the response arrived, or the awaiting future was cancelled (e.g. by
+/// `send_and_recv_with_timeout`). Without this, a cancelled call would
+/// leave a dangling `req_id → Sender` entry that only gets reclaimed if
+/// the peer eventually replies.
+struct PendingGuard {
+    pending: PendingMap,
+    req_id: u64,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.pending.lock() {
+            map.remove(&self.req_id);
+        }
     }
 }
 
