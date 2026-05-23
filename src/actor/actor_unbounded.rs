@@ -4,34 +4,34 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// User-implemented unit of work in the actor system. (unbounded-channel variant.)
+///
+/// Same semantics as the bounded variant — see the bounded `Actor` doc
+/// for the trait-level overview. The only differences are
+/// `Actor::register` not taking a `channel_size` parameter and the
+/// underlying mailbox being `tokio::sync::mpsc::unbounded_channel`
+/// instead of `channel(capacity)`.
 #[async_trait::async_trait]
-/// Trait for actors in the actor system
-/// An actor is a fundamental unit of computation that encapsulates state and behavior.
-/// Actors communicate with each other by sending messages, and they can be created, restarted, or stopped by the actor system.
-/// Actors can handle messages asynchronously and can be in different states (e.g., starting, receiving, stopping, restarting, terminated).
-/// Actors can also implement pre-start, pre-restart, post-stop, and post-restart hooks to perform actions at different lifecycle stages.
-/// Actors must implement the `actor` method to handle incoming messages and return results.
-/// Actors must also implement the `address` method to provide a unique identifier for the actor.
-/// Actors can be registered with the actor system using the `register` method, which will start the actor and handle its lifecycle.
 pub trait Actor
 where
     Self: Sized + Send + Sync + 'static,
 {
-    /// The message type that the actor can handle.
+    /// Inbound message type. `Debug` for log output. With `multi-node` on,
+    /// must also implement `xancode::Codec`.
     type Message: std::fmt::Debug + Sized + Send + Sync + 'static;
 
-    /// The result type that the actor returns after processing a message.
+    /// Reply type returned from `handle`. Visible to `send_and_recv::<Self>` callers.
     type Result: std::fmt::Debug + Sized + Send + 'static;
 
-    /// The error type that the actor can return.
+    /// Error type returned from `handle`. Combined with `ErrorHandling`
+    /// to decide resume / restart / stop.
     type Error: std::fmt::Debug + std::fmt::Display + Send;
 
-    /// The address of the actor, which is a unique identifier for the actor in the actor system.
+    /// Returns this actor's address. Must be stable for the actor's lifetime.
     #[cfg(not(feature = "multi-node"))]
     fn address(&self) -> &str;
-    /// The address of the actor. With `multi-node` enabled, this is a fully
-    /// qualified `Address { name, node }`; the registering `ActorSystem` will
-    /// reject the registration if `node` doesn't match its own node name.
+    /// Returns this actor's fully qualified address (multi-node).
+    /// `node` must equal the registering `ActorSystem`'s `node_name`.
     #[cfg(feature = "multi-node")]
     fn address(&self) -> &crate::inter_node::Address;
 
@@ -48,25 +48,26 @@ where
         }
     }
 
-    /// Handles incoming messages sent to the actor.
+    /// Process one inbound message. Return `Err` to trigger this actor's
+    /// `ErrorHandling` policy.
     async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error>;
 
-    /// Pre-start hook that is called before the actor starts processing messages.
+    /// One-time setup before entering `Receiving`.
     async fn pre_start(&mut self) {}
 
-    /// Pre-restart hook that is called before the actor restarts.
+    /// Runs before the actor restarts (after `post_stop`, before the next `pre_start`).
     async fn pre_restart(&mut self) {}
 
-    /// Post-stop hook that is called after the actor stops processing messages.
+    /// Runs as the actor enters `Stopping` (also before a restart).
     async fn post_stop(&mut self) {}
 
-    /// Post-restart hook that is called after the actor restarts.
+    /// Runs at the top of every restart iteration after the first run.
     async fn post_restart(&mut self) {}
 
-    /// Registers the actor with the actor system and starts it.
-    /// This method will run the actor in a loop, handling messages and managing the actor's lifecycle.
-    /// > Don't implement this method directly.
-    /// > Instead, use the `register` method to register the actor with the actor system.
+    /// Internal receive/lifecycle loop. Do not implement manually —
+    /// use [`register`] to wire the actor up.
+    ///
+    /// [`register`]: Self::register
     async fn run_actor(
         &mut self,
         actor_system_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd>,
@@ -198,7 +199,15 @@ where
         }
     }
 
-    /// Registers the actor with the actor system and starts it.
+    /// Register the actor with `actor_system` and spawn its receive loop.
+    ///
+    /// Consumes `self`. Awaits until the system confirms (or rejects)
+    /// registration. `error_handling` sets the per-actor policy applied
+    /// on every `handle` error; `blocking` chooses between `tokio::spawn`
+    /// and `spawn_blocking + block_on` for the actor's host task.
+    ///
+    /// Unlike the bounded variant, there is no `channel_size` parameter
+    /// — the mailbox is an unbounded mpsc.
     async fn register(
         mut self,
         actor_system: &mut ActorSystem,

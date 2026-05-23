@@ -119,19 +119,22 @@ let results = system
 // results.local.len()  — exact number of local actors that received it
 // results.remote.len() — number of remote peer nodes we sent envelopes to
 //                        (NOT the number of remote actors that received it)
-// results.all_ok()     — every entry on both sides succeeded
+// results.all_ok()     — every entry succeeded; for `remote`, this only
+//                        confirms envelope acceptance, not actor reach
 ```
 
 `NodeFilter` variants:
 
-- `SelfOnly` — regex match against this node's local actors.
-- `Node(name)` — single named target (self or remote).
-- `Peers(Vec<name>)` — union of listed nodes.
+- `SelfOnly` — regex match against this node's local actors. No broker traffic.
+- `Node(name)` — single named target. If `name` equals this node, behaves like `SelfOnly`.
+- `Peers(Vec<name>)` — union of listed nodes. Duplicates are deduped; entries equal to this node turn into local fan-out (no extra envelope to ourselves).
 
 `send_broadcast` (multi-node) returns `BroadcastResult { local, remote }`, and the two fields **count different things**:
 
 - `local.len()` — exact number of local actors that received the message.
 - `remote.len()` — number of remote peer nodes you shipped a `BroadcastFire` envelope to. Each peer then runs its own regex match locally and dispatches to 0..N of its actors, but it's **fire-and-forget**, so no per-actor confirmation comes back. There's no way to tell from `results` how many remote actors actually got it.
+
+`BroadcastResult::iter()` chains `local` then `remote` for terse "any failure?" checks, but the chained entries have different meanings — prefer `all_ok()` for a global verdict, or read `local` / `remote` separately when the distinction matters.
 
 That's the intended trade-off: broadcasts stay a single one-shot envelope per peer, with no round trip. If you need an accurate cluster-wide actor count, this API can't give it to you — that would require a request/response variant where each peer replies with its own match count.
 

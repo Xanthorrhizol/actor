@@ -119,19 +119,22 @@ let results = system
 // results.local.len()  — 메시지를 받은 로컬 actor의 정확한 수
 // results.remote.len() — envelope을 보낸 원격 peer 노드의 수
 //                        (원격에서 실제로 메시지를 받은 actor 수가 아님)
-// results.all_ok()     — 양쪽 모두 Ok면 true
+// results.all_ok()     — 모든 entry가 Ok; `remote`의 경우 envelope 수락
+//                        여부만 보장하며, actor 도달은 보장하지 않음
 ```
 
 `NodeFilter` variant:
 
-- `SelfOnly` — 이 노드의 로컬 actor들과 regex 매칭.
-- `Node(name)` — 하나의 명명된 대상(self일 수도, 원격일 수도).
-- `Peers(Vec<name>)` — 나열된 노드들의 합집합.
+- `SelfOnly` — 이 노드의 로컬 actor들과 regex 매칭. 브로커 트래픽 없음.
+- `Node(name)` — 하나의 명명된 대상. `name`이 자기 노드명이면 `SelfOnly`와 동일하게 동작.
+- `Peers(Vec<name>)` — 나열된 노드들의 합집합. 중복은 dedup되고, 자기 노드명이 포함되면 별도 envelope 없이 로컬 fan-out으로 처리됩니다.
 
 `send_broadcast`(multi-node)는 `BroadcastResult { local, remote }`를 반환합니다. 두 필드는 **세는 대상이 다릅니다**:
 
 - `local.len()` — 메시지를 받은 로컬 actor의 정확한 수.
 - `remote.len()` — `BroadcastFire` envelope을 보낸 원격 peer 노드의 수. 각 peer는 자기 로컬 regex 매칭 후 0~N개 actor로 dispatch하지만, **fire-and-forget**이라 per-actor 확인이 호출자에게 안 돌아옵니다. `results`만으로는 원격에서 실제로 메시지를 받은 actor가 몇 개인지 알 수 없습니다.
+
+`BroadcastResult::iter()`는 `local` 다음 `remote` 순으로 chain한 iterator를 줍니다 — "실패 있나" 짧게 확인할 때 편리하지만, 섞이는 entry들의 의미가 서로 다르므로 전역 판정은 `all_ok()`를, 카운트가 의미 있을 땐 `local` / `remote`를 따로 보는 게 정확합니다.
 
 이건 설계상의 trade-off입니다: broadcast를 round-trip 없는 가벼운 envelope 한 방으로 유지하기 위해 정확도를 포기. 클러스터 전역의 actor 단위 카운트가 필요하다면 이 API로는 불가능하고, 각 peer가 자기 매치 수를 응답으로 돌려주는 request/response 변형이 필요합니다.
 

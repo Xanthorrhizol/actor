@@ -7,8 +7,11 @@ use std::sync::Arc;
 #[cfg(feature = "multi-node")]
 use crate::inter_node::InterNodeRuntime;
 
-/// Commands for the ActorSystem to handle various operations
-/// You can send these commands to the ActorSystem's handler channel directly.
+/// Wire protocol between `ActorSystem` and the single `actor_system_loop`
+/// task that owns the registry. Most users never construct these directly
+/// — the public `ActorSystem` methods wrap each variant. See the bounded
+/// variant's `ActorSystemCmd` for per-variant doc; this is the same enum
+/// but with unbounded mpsc senders.
 pub enum ActorSystemCmd {
     Register {
         actor_type: String,
@@ -55,9 +58,11 @@ pub enum ActorSystemCmd {
 }
 
 #[derive(Clone)]
-/// The ActorSystem is the main entry point for managing actors.
-/// It contains a handler channel to send commands to the actor system.
-/// It's clonable so that it can be shared across different parts of the application.
+/// Main entry point for spawning, addressing, and messaging actors.
+/// Same role and semantics as the bounded variant — see the
+/// `bounded-channel` `ActorSystem` doc — but uses an unbounded mpsc
+/// command channel, so there is no `channel_size` knob and no
+/// back-pressure from the loop's queue.
 pub struct ActorSystem {
     handler_tx: tokio::sync::mpsc::UnboundedSender<ActorSystemCmd>,
     cache: HashMap<String, (String, Arc<dyn Mailbox>)>,
@@ -81,11 +86,8 @@ impl Default for ActorSystem {
 }
 
 impl ActorSystem {
-    /// Creates a new ActorSystem instance.
-    ///
-    /// With the `multi-node` feature enabled, pass `cluster = Some((node_name, broker_addr))`
-    /// to connect to a xanq broker and participate in inter-node delivery; pass `None` to
-    /// run the system in single-node mode under the same feature flag.
+    /// Spin up a new `ActorSystem` and its backing loop task. No
+    /// `channel_size` parameter — the command channel is unbounded.
     #[cfg(not(feature = "multi-node"))]
     pub fn new() -> Self {
         let (handler_tx, handler_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -97,6 +99,8 @@ impl ActorSystem {
         me
     }
 
+    /// Spin up a new `ActorSystem` under `multi-node`. See the bounded
+    /// variant's `new` for the parameter and broker-connect semantics.
     #[cfg(feature = "multi-node")]
     pub async fn new(
         node_name: String,
@@ -126,8 +130,10 @@ impl ActorSystem {
         &self.node_name
     }
 
-    /// Look up a local actor by `(actor_type, address)` and forward the
-    /// already-decoded payload. Used by the inter-node request consumer.
+    /// Forward an already-decoded payload to a local actor identified by
+    /// `(actor_type, name)`. See the bounded variant for details. Called
+    /// by the inter-node request consumer; application code should
+    /// prefer [`Self::send`].
     #[cfg(feature = "multi-node")]
     pub async fn dispatch_local_any(
         &self,
@@ -152,6 +158,8 @@ impl ActorSystem {
         }
     }
 
+    /// Request-response counterpart to [`Self::dispatch_local_any`].
+    /// See the bounded variant for details.
     #[cfg(feature = "multi-node")]
     pub async fn dispatch_local_any_and_recv(
         &self,
@@ -309,13 +317,16 @@ impl ActorSystem {
         })
     }
 
-    /// Returns the handler channel sender for the ActorSystem.
-    /// You can use this to send commands to the ActorSystem directly.
+    /// Clone of the loop's command channel. See the bounded variant's
+    /// `handler_tx` for usage; the only difference is the unbounded
+    /// sender type.
     pub fn handler_tx(&self) -> tokio::sync::mpsc::UnboundedSender<ActorSystemCmd> {
         self.handler_tx.clone()
     }
 
-    /// Filters the addresses of actors based on a regex pattern.
+    /// Snapshot of local actor addresses whose names match
+    /// `address_regex`. `*` is treated as a wildcard. See the bounded
+    /// variant for details.
     pub async fn filter_address(&self, address_regex: String) -> Vec<String> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.handler_tx.send(ActorSystemCmd::FilterAddress {
@@ -331,22 +342,30 @@ impl ActorSystem {
         }
     }
 
-    /// Restarts an actor.
+    /// Restart every local actor whose name matches `address_regex`
+    /// (`*` wildcard syntax, same as [`filter_address`]).
+    ///
+    /// Fire-and-forget. A `send` immediately after `restart` may hit an
+    /// actor still in `Restarting` and get `ActorNotReady` after the
+    /// system's retry budget.
+    ///
+    /// [`filter_address`]: Self::filter_address
     pub fn restart(&mut self, address_regex: String) {
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::Restart { address_regex });
     }
 
-    /// Unregisters an actor.
+    /// Unregister every local actor whose name matches `address_regex`
+    /// and tear down its task. Fire-and-forget. `"*"` matches everything.
     pub fn unregister(&mut self, address_regex: String) {
         let _ = self
             .handler_tx
             .send(ActorSystemCmd::Unregister { address_regex });
     }
 
-    /// Send a message to a specific actor by its address.
-    /// It doesn't wait for the actor to be ready.
+    /// Fire-and-forget send to a single actor. See the bounded variant
+    /// for the cache, readiness-retry, and cross-node routing semantics.
     pub async fn send<T>(
         &mut self,
         #[cfg(not(feature = "multi-node"))] address: String,
@@ -439,9 +458,10 @@ impl ActorSystem {
         }
     }
 
-    /// Send a message to a specific actor by its address.
-    /// It doesn't wait for the actor to be ready.
-    /// It doesn't cache the actor's tx for future use.
+    /// Cache-bypassing variant of [`send`]. See the bounded variant
+    /// for details.
+    ///
+    /// [`send`]: Self::send
     pub async fn send_without_tx_cache<T>(
         &self,
         #[cfg(not(feature = "multi-node"))] address: String,
@@ -602,8 +622,24 @@ impl ActorSystem {
         self.broadcast_local_cached::<T>(address_regex, msg).await
     }
 
-    /// Sends a message across `filter`'s nodes. `BroadcastResult` separates
-    /// the local per-actor results from the remote per-peer envelope acks.
+    /// Sends a message across the nodes selected by `filter`.
+    ///
+    /// `address_regex` is the `*`-wildcard pattern used by [`filter_address`];
+    /// on each targeted node it's matched against that node's local actor
+    /// addresses.
+    ///
+    /// Returns a [`crate::inter_node::BroadcastResult`] with two separately
+    /// counted vectors:
+    /// - `local` — per-actor results for the caller's own local fan-out.
+    /// - `remote` — per-peer envelope acks for `BroadcastFire` sends. Each
+    ///   peer regex-matches against *its own* local actors and dispatches
+    ///   fire-and-forget, so `remote.len()` does **not** tell you how many
+    ///   remote actors actually received the message.
+    ///
+    /// `NodeFilter::Peers` containing only the caller's own node degenerates
+    /// to a `SelfOnly` fan-out (no broker traffic).
+    ///
+    /// [`filter_address`]: crate::ActorSystem::filter_address
     #[cfg(feature = "multi-node")]
     pub async fn send_broadcast<T>(
         &mut self,
@@ -748,6 +784,11 @@ impl ActorSystem {
         self.broadcast_local_uncached::<T>(address_regex, msg).await
     }
 
+    /// Cache-bypassing variant of [`send_broadcast`] for multi-node.
+    /// Same `BroadcastResult { local, remote }` shape and the same per-actor
+    /// vs. per-peer count semantics — see `send_broadcast`'s docs.
+    ///
+    /// [`send_broadcast`]: Self::send_broadcast
     #[cfg(feature = "multi-node")]
     pub async fn send_broadcast_without_tx_cache<T>(
         &self,
@@ -817,7 +858,8 @@ impl ActorSystem {
         BroadcastResult { local, remote }
     }
 
-    /// Sends a message to a specific actor and waits for the result.
+    /// Request-response send. See the bounded variant for the cache,
+    /// readiness-retry, and cross-node routing semantics.
     pub async fn send_and_recv<T>(
         &mut self,
         #[cfg(not(feature = "multi-node"))] address: String,
@@ -927,8 +969,9 @@ impl ActorSystem {
         }
     }
 
-    /// Sends a message to a specific actor and waits for the result.
-    /// It doesn't cache the actor's tx for future use.
+    /// Cache-bypassing variant of [`send_and_recv`].
+    ///
+    /// [`send_and_recv`]: Self::send_and_recv
     pub async fn send_and_recv_without_tx_cache<T>(
         &self,
         #[cfg(not(feature = "multi-node"))] address: String,
@@ -1002,10 +1045,10 @@ impl ActorSystem {
         }
     }
 
-    /// Runs a job with the specified actor and message.
-    /// If you want to subscribe to the results, set `subscribe` to true.
-    /// It returns a receiver that you can use to receive the results.
-    /// If you want to set a job_id, set it to `Some(job_id)`.
+    /// Spawn a background job that delivers `msg` to `address` on the
+    /// schedule described by [`JobSpec`]. See the bounded variant for the
+    /// full subscribe/result-flow contract and the multi-node routing
+    /// behavior.
     pub async fn run_job<T>(
         &mut self,
         #[cfg(not(feature = "multi-node"))] address: String,
@@ -1186,11 +1229,9 @@ impl ActorSystem {
         }
     }
 
-    /// Runs a job with the specified actor and message.
-    /// If you want to subscribe to the results, set `subscribe` to true.
-    /// It returns a receiver that you can use to receive the results.
-    /// It doesn't cache the actor's tx for future use.
-    /// If you want to set a job_id, set it to `Some(job_id)`.
+    /// Cache-bypassing variant of [`run_job`].
+    ///
+    /// [`run_job`]: Self::run_job
     pub async fn run_job_without_tx_cache<T>(
         &self,
         #[cfg(not(feature = "multi-node"))] address: String,
@@ -1366,6 +1407,8 @@ impl ActorSystem {
         }
     }
 
+    /// Abort a running job: signal its loop to exit at the next wait point.
+    /// Honored within milliseconds via `tokio::select!` racing the sleep.
     pub async fn abort_job(&self, job_id: String) {
         info!("Aborting job {}", job_id);
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1386,6 +1429,11 @@ impl ActorSystem {
         }
     }
 
+    /// Pause a running job. Pair with [`resume_job`] to continue or
+    /// [`abort_job`] to terminate while paused.
+    ///
+    /// [`resume_job`]: Self::resume_job
+    /// [`abort_job`]: Self::abort_job
     pub async fn stop_job(&self, job_id: String) {
         info!("Stopping job {}", job_id);
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1406,6 +1454,10 @@ impl ActorSystem {
         }
     }
 
+    /// Resume a [`stop_job`]'d job. The loop wakes and proceeds to the
+    /// next iteration immediately.
+    ///
+    /// [`stop_job`]: Self::stop_job
     pub async fn resume_job(&self, job_id: String) {
         info!("Resuming job {}", job_id);
         let (tx, rx) = tokio::sync::oneshot::channel();

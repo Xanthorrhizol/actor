@@ -19,6 +19,22 @@ pub const DEFAULT_BROKER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<ResponseOutcome>>>>;
 
+/// Cross-node runtime owned by `ActorSystem` when `multi-node` is on.
+///
+/// Holds:
+/// - the xanq broker client (one TCP connection per `ActorSystem`),
+/// - the pending-requests map (`req_id` → `oneshot::Sender`) used to wake
+///   awaiting `send_and_recv` callers when a matching `InterNodeResponse`
+///   arrives,
+/// - the next request id counter (per-node monotonic).
+///
+/// Spawned by [`Self::start_consumers`]: a request consumer that decodes
+/// incoming `InterNodeMessage`s and dispatches them through the local
+/// `ActorSystem`, and a response consumer that matches `req_id`s to the
+/// pending map.
+///
+/// `Clone`able — each clone shares the same client, pending map, and
+/// counter via `Arc`. Mostly cloned into the spawned consumer tasks.
 #[derive(Clone)]
 pub struct InterNodeRuntime {
     node_name: String,
@@ -58,11 +74,14 @@ impl InterNodeRuntime {
         })
     }
 
+    /// This runtime's node name (as supplied to `connect`).
     pub fn node_name(&self) -> &str {
         &self.node_name
     }
 
-    /// Send a fire-and-forget envelope to `target.node`.
+    /// Send a fire-and-forget `InterNodeMessage::Fire` envelope to
+    /// `target.node`'s request topic. Returns once the broker accepts the
+    /// produce; the receiver dispatches asynchronously and never replies.
     pub async fn fire(
         &self,
         target: &Address,
@@ -80,7 +99,14 @@ impl InterNodeRuntime {
             .map_err(|e| ActorError::InterNodeIo(e.to_string()))
     }
 
-    /// Send a request envelope and wait for the matching response bytes.
+    /// Send an `InterNodeMessage::Call` envelope and await the matching
+    /// `InterNodeResponse`. Allocates a fresh `req_id`, registers a
+    /// `oneshot` slot in the pending map, ships the envelope, and parks
+    /// the future on the slot until the response consumer wakes it.
+    ///
+    /// On produce failure the pending entry is cleaned up before
+    /// returning `InterNodeIo`. On `ResponseOutcome::Err` the peer's
+    /// error string is surfaced as `InterNodeRemote`.
     pub async fn call(
         &self,
         target: &Address,
@@ -124,6 +150,11 @@ impl InterNodeRuntime {
 
     /// Ask `target_node` to fan out a fire-and-forget broadcast across its
     /// local actors of `actor_type` whose name matches `name_regex`.
+    ///
+    /// Returns once the broker accepts the envelope. The peer's actual
+    /// per-actor dispatches are fire-and-forget — there's no confirmation
+    /// of how many remote actors matched, which is why
+    /// `BroadcastResult::remote` counts peers rather than actors.
     pub async fn broadcast_fire(
         &self,
         target_node: &str,
@@ -142,7 +173,21 @@ impl InterNodeRuntime {
             .map_err(|e| ActorError::InterNodeIo(e.to_string()))
     }
 
-    /// Spawn the request and response consume loops bound to this node's topics.
+    /// Spawn the two long-running consumer tasks that drive this node's
+    /// inter-node delivery.
+    ///
+    /// - Request consumer subscribes to `Topic::request(self.node_name)`
+    ///   and, for each `InterNodeMessage`, spawns a short-lived task that
+    ///   calls `handle_incoming_request` (decoding via the registry and
+    ///   dispatching through the local `ActorSystem`).
+    /// - Response consumer subscribes to
+    ///   `Topic::response(self.node_name)` and matches each
+    ///   `InterNodeResponse` against the pending-requests map to wake the
+    ///   awaiting `send_and_recv` callers.
+    ///
+    /// Called once from `ActorSystem::new` after the runtime is built.
+    /// Both consumer tasks run for the lifetime of the process (no
+    /// shutdown signal).
     pub async fn start_consumers(&self, system: ActorSystem) -> Result<(), ActorError> {
         let req_consumer = self
             .client

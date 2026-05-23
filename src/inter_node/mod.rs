@@ -1,3 +1,18 @@
+//! Cross-process delivery layer (`multi-node` feature).
+//!
+//! Adds:
+//! - structural [`Address`] routing (`name` + `node`) so calls automatically
+//!   pick local vs. cross-node delivery,
+//! - per-node xanq `Anycast` request/response [`Topic`]s with envelope
+//!   matching by `req_id`,
+//! - an inventory-based decoder registry populated by the
+//!   `register_for_inter_node!` macro,
+//! - [`NodeFilter`] / [`BroadcastResult`] for fan-out across selected peers.
+//!
+//! Requires a xanq broker; pass `broker_addr = Some(...)` to
+//! `ActorSystem::new`. The [`InterNodeRuntime`] is built and the consumer
+//! tasks are spawned automatically.
+
 pub mod address;
 pub mod decoder;
 pub mod dispatcher;

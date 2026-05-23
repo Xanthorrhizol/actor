@@ -1,3 +1,10 @@
+//! Convenience re-exports for typical actor application code.
+//!
+//! Drop a `use xan_actor::prelude::*;` into your binary/crate root and
+//! everything you need to define actors, run them, and address them is in
+//! scope. Advanced types (`Mailbox`, `Message`, the inter-node decoder
+//! helpers) remain accessible at their canonical paths.
+
 pub use crate::actor::Actor;
 pub use crate::actor_system::ActorSystem;
 pub use crate::error::ActorError;

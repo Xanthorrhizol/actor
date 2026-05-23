@@ -4,34 +4,65 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// User-implemented unit of work in the actor system. (bounded-channel variant.)
+///
+/// You provide:
+/// - associated types `Message`, `Result`, `Error`,
+/// - `address()` so the system can place the actor in its address map,
+/// - `handle()` to process each inbound message.
+///
+/// The system provides the rest: a typed mailbox, a tokio task host
+/// (per [`Blocking`]), the lifecycle state machine ([`LifeCycle`]), and
+/// the optional hooks ([`pre_start`], [`pre_restart`], [`post_stop`],
+/// [`post_restart`]) that fire at the relevant transitions.
+///
+/// Register an actor with `actor.register(&mut system, ...)` (see
+/// [`register`]); never implement [`run_actor`] manually — its body is
+/// the receive/lifecycle loop the system depends on.
+///
+/// `'static + Send + Sync` because the actor's state moves into a tokio
+/// task that may outlive the caller.
+///
+/// [`Blocking`]: crate::Blocking
+/// [`LifeCycle`]: crate::LifeCycle
+/// [`pre_start`]: Self::pre_start
+/// [`pre_restart`]: Self::pre_restart
+/// [`post_stop`]: Self::post_stop
+/// [`post_restart`]: Self::post_restart
+/// [`register`]: Self::register
+/// [`run_actor`]: Self::run_actor
 #[async_trait::async_trait]
-/// Trait for actors in the actor system
-/// An actor is a fundamental unit of computation that encapsulates state and behavior.
-/// Actors communicate with each other by sending messages, and they can be created, restarted, or stopped by the actor system.
-/// Actors can handle messages asynchronously and can be in different states (e.g., starting, receiving, stopping, restarting, terminated).
-/// Actors can also implement pre-start, pre-restart, post-stop, and post-restart hooks to perform actions at different lifecycle stages.
-/// Actors must implement the `actor` method to handle incoming messages and return results.
-/// Actors must also implement the `address` method to provide a unique identifier for the actor.
-/// Actors can be registered with the actor system using the `register` method, which will start the actor and handle its lifecycle.
 pub trait Actor
 where
     Self: Sized + Send + Sync + 'static,
 {
-    /// The message type that the actor can handle.
+    /// Inbound message type. `Debug` for log output. With `multi-node` on,
+    /// must also implement `xancode::Codec` for cross-node serialization
+    /// (enforced via [`MaybeCodec`] on the send methods).
+    ///
+    /// [`MaybeCodec`]: crate::MaybeCodec
     type Message: std::fmt::Debug + Sized + Send + Sync + 'static;
 
-    /// The result type that the actor returns after processing a message.
+    /// Reply type returned from `handle`. Visible to callers of
+    /// `send_and_recv::<Self>`.
     type Result: std::fmt::Debug + Sized + Send + 'static;
 
-    /// The error type that the actor can return.
+    /// Error type returned from `handle` on failure. Combined with the
+    /// per-actor [`ErrorHandling`] policy to decide whether to resume,
+    /// restart, or stop the actor.
+    ///
+    /// [`ErrorHandling`]: crate::ErrorHandling
     type Error: std::fmt::Debug + std::fmt::Display + Send;
 
-    /// The address of the actor, which is a unique identifier for the actor in the actor system.
+    /// Returns this actor's address. Must be stable for the actor's
+    /// lifetime — the system uses it as the key in its address map.
     #[cfg(not(feature = "multi-node"))]
     fn address(&self) -> &str;
-    /// The address of the actor. With `multi-node` enabled, this is a fully
-    /// qualified `Address { name, node }`; the registering `ActorSystem` will
-    /// reject the registration if `node` doesn't match its own node name.
+    /// Returns this actor's fully qualified address (multi-node).
+    /// `node` must equal the registering `ActorSystem`'s `node_name`,
+    /// otherwise `register` fails with [`AddressNotOwned`].
+    ///
+    /// [`AddressNotOwned`]: crate::ActorError::AddressNotOwned
     #[cfg(feature = "multi-node")]
     fn address(&self) -> &crate::inter_node::Address;
 
@@ -49,25 +80,53 @@ where
         }
     }
 
-    /// Handles incoming messages sent to the actor.
+    /// Process one inbound message. Called once per message in the actor's
+    /// receive loop. The `Arc<Self::Message>` is shared with potential
+    /// broadcast recipients — clone the inner payload if you need to
+    /// mutate it.
+    ///
+    /// Return `Err(...)` to trigger this actor's [`ErrorHandling`]
+    /// policy: `Resume` drops the message and continues, `Restart` tears
+    /// down the mailbox and re-enters via `pre_restart` / `post_restart`,
+    /// `Stop` runs `post_stop` and terminates.
+    ///
+    /// [`ErrorHandling`]: crate::ErrorHandling
     async fn handle(&mut self, msg: Arc<Self::Message>) -> Result<Self::Result, Self::Error>;
 
-    /// Pre-start hook that is called before the actor starts processing messages.
+    /// Runs once after the actor enters [`LifeCycle::Starting`] but
+    /// before transitioning to `Receiving`. Use for one-time setup that
+    /// needs `&mut self` (e.g. opening a connection, registering with an
+    /// external service).
+    ///
+    /// [`LifeCycle::Starting`]: crate::LifeCycle::Starting
     async fn pre_start(&mut self) {}
 
-    /// Pre-restart hook that is called before the actor restarts.
+    /// Runs after `post_stop` and before the actor re-enters
+    /// `Starting`/`Restarting` for a restart. Use to release / re-prepare
+    /// state that needs to be fresh in the next incarnation.
     async fn pre_restart(&mut self) {}
 
-    /// Post-stop hook that is called after the actor stops processing messages.
+    /// Runs as the actor enters [`LifeCycle::Stopping`] — either due to
+    /// `Stop` error handling, a `kill` from `unregister`, or an explicit
+    /// `restart`. Last chance to clean up before the task exits.
+    ///
+    /// [`LifeCycle::Stopping`]: crate::LifeCycle::Stopping
     async fn post_stop(&mut self) {}
 
-    /// Post-restart hook that is called after the actor restarts.
+    /// Runs at the top of every restart iteration (after the first run),
+    /// before `pre_start`'s normal startup work. Symmetric to
+    /// `pre_restart`; use for "what to do once the restart actually
+    /// begins" rather than "what to do before tearing down".
     async fn post_restart(&mut self) {}
 
-    /// Registers the actor with the actor system and starts it.
-    /// This method will run the actor in a loop, handling messages and managing the actor's lifecycle.
-    /// > Don't implement this method directly.
-    /// > Instead, use the `register` method to register the actor with the actor system.
+    /// Internal receive/lifecycle loop.
+    ///
+    /// Owns the mailbox, drains messages, applies `ErrorHandling`,
+    /// fires the lifecycle hooks, and reports state transitions back to
+    /// `actor_system_loop` via `ActorSystemCmd`. Do **not** implement
+    /// this method — use [`register`] to wire the actor up.
+    ///
+    /// [`register`]: Self::register
     async fn run_actor(
         &mut self,
         actor_system_tx: tokio::sync::mpsc::Sender<ActorSystemCmd>,
@@ -216,7 +275,25 @@ where
         }
     }
 
-    /// Registers the actor with the actor system and starts it.
+    /// Register the actor with `actor_system` and spawn its receive loop.
+    ///
+    /// Consumes `self` (the actor's state moves into the spawned task).
+    /// Awaits until the system confirms registration (or rejects it with
+    /// `AddressAlreadyExist` / `AddressNotOwned`), so on `Ok(())` the
+    /// actor is wired up — though it may still be in [`LifeCycle::Starting`]
+    /// when this returns.
+    ///
+    /// - `error_handling`: per-actor [`ErrorHandling`] policy applied
+    ///   on every `handle` error.
+    /// - `blocking`: chooses between `tokio::spawn` (`NonBlocking`) and
+    ///   `spawn_blocking + block_on` (`Blocking`). Pick `Blocking` if the
+    ///   handler does long synchronous work that would otherwise starve
+    ///   the async runtime.
+    /// - `channel_size`: override the mailbox capacity for this actor.
+    ///   `None` uses `CHANNEL_SIZE` (4096).
+    ///
+    /// [`ErrorHandling`]: crate::ErrorHandling
+    /// [`LifeCycle::Starting`]: crate::LifeCycle::Starting
     async fn register(
         mut self,
         actor_system: &mut ActorSystem,
