@@ -52,12 +52,6 @@ pub enum ActorSystemCmd {
         job_id: String,
         result_tx: tokio::sync::oneshot::Sender<Option<JobController>>,
     },
-    /// Snapshot of the currently registered `(actor_type, address)` pairs.
-    /// Used by the inter-node discovery handler to answer `QueryAll`.
-    #[cfg(feature = "multi-node")]
-    ListLocal {
-        result_tx: tokio::sync::oneshot::Sender<Vec<(String, String)>>,
-    },
 }
 
 #[derive(Clone)]
@@ -1618,11 +1612,6 @@ async fn actor_system_loop(
             ActorSystemCmd::FindJob { job_id, result_tx } => {
                 debug!("FindJob with id {}", job_id);
                 let _ = result_tx.send(job_controllers.get(&job_id).cloned());
-            }
-            #[cfg(feature = "multi-node")]
-            ActorSystemCmd::ListLocal { result_tx: _result_tx } => {
-                // ListLocal is no longer used after auto-discovery was removed,
-                // but the variant is kept so older messages still match. No-op.
             }
         };
     }
