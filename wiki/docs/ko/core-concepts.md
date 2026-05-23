@@ -18,6 +18,7 @@
 - 등록: `register(...)`
 - 단건 송신: `send::<T>(address, msg)`
 - 요청/응답: `send_and_recv::<T>(address, msg)`
+- 요청/응답 (데드라인): `send_and_recv_with_timeout::<T>(address, msg, timeout)` — 시간 내 응답 없으면 `ActorError::Timeout(duration)` 반환. 캐시 우회 변종 `send_and_recv_without_tx_cache_with_timeout`도 제공.
 - 브로드캐스트: `send_broadcast::<T>(regex, msg)`
 - 잡 실행: `run_job::<T>(...)`
 

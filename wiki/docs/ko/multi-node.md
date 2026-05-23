@@ -97,6 +97,7 @@ Server는 API 레벨에서만 제네릭이고 와이어는 바이트 단위 type
 
 ```rust
 use xan_actor::prelude::*;   // Address, NodeFilter, ...
+use std::time::Duration;
 
 // 같은 노드 — 로컬 빠른 경로, 브로커 라운드트립 없음.
 system
@@ -107,6 +108,21 @@ system
 let result = system
     .send_and_recv::<MyActor>(Address::new("node-b", "/echo/1"), MyMessage::Ping("hi".into()))
     .await?;
+
+// 데드라인 있는 호출 — cross-node에서는 죽은 피어로 인한 무한 대기를
+// 막기 위해 권장.
+match system
+    .send_and_recv_with_timeout::<MyActor>(
+        Address::new("node-b", "/echo/1"),
+        MyMessage::Ping("hi".into()),
+        Duration::from_secs(3),
+    )
+    .await
+{
+    Ok(reply) => println!("응답: {reply:?}"),
+    Err(ActorError::Timeout(d)) => eprintln!("{d:?} 안에 응답 없음"),
+    Err(e) => return Err(e),
+}
 
 // 명시 피어 집합으로 브로드캐스트.
 let results = system
@@ -181,6 +197,7 @@ send_and_recv::<T>(addr, msg)
 
 - `register_for_inter_node!` 호출 누락은 해당 actor 타입의 envelope이 처음 도착하는 시점에 `ActorError::InterNodeDecoderMissing`으로 표면화됩니다. 매크로는 `inventory::submit!`로 전개되므로 반드시 모듈 스코프에서 호출해야 합니다(함수 내부 ❌).
 - `address.node != self_node`인 송신을 `broker_addr = None`으로 만든 시스템에서 호출하면 `ActorError::InterNodeNotConfigured`.
+- Cross-node `send_and_recv`는 암묵적 실패 감지가 없습니다 — 내부 `oneshot` 대기는 피어가 응답을 publish해야만 풀리므로, 죽은 피어에 보낸 호출은 무한 대기합니다. `send_and_recv_with_timeout(addr, msg, duration)` (또는 `send_and_recv_without_tx_cache_with_timeout`)으로 대기 시간을 제한하세요(위 Step 5 예시 참고). 만료 시 `ActorError::Timeout(duration)`을 반환하며, dispatcher의 pending-requests 엔트리는 `Drop` 가드로 자동 정리됩니다.
 - 초기 broker 연결은 `inter_node::DEFAULT_BROKER_CONNECT_TIMEOUT`(5초)로 제한됩니다. broker가 없거나 도달 불가면 OS 기본 TCP connect 타임아웃(분 단위) 대신 `ActorError::InterNodeIo("broker connect to ... timed out after 5s")`로 즉시 `ActorSystem::new`가 실패합니다. 다른 값이 필요하면 `InterNodeRuntime::connect_with_timeout`을 직접 사용하세요.
 - `NodeFilter::Peers`의 노드 멤버십은 호출자가 제공합니다. 라이브러리는 어느 피어가 살아있는지 추적하지 않습니다; 구독자가 없는 `Topic::request(node)`로 보내면 envelope이 브로커 큐에 누군가 구독할 때까지 쌓입니다.
 - 주소가 완전 자격을 갖춤 → 단일 `ActorSystem` 안의 location transparency보다 *명시적*. 호출자는 어느 노드가 actor를 소유하는지 알아야 합니다. 대신 race window나 eventual-consistency window가 없습니다 — 라우팅은 주소 자체로 결정.
