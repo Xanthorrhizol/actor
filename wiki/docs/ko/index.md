@@ -8,9 +8,11 @@
 - `send::<T>()` 호출 시 컴파일 타임에 메시지 타입이 검증되는 구조
 - 주소 기반 라우팅과 라이프사이클(재시작/중지/삭제) 처리
 - bounded/unbounded 채널 모드 차이
+- xanq 브로커를 통한 노드 간 전송 (`multi-node` feature, 선택)
 
 ## 문서 맵
 
 - `Core Concepts`: 핵심 개념과 타입 안정성 모델
 - `Architecture`: 내부 컴포넌트 구조와 메시지 흐름
 - `Quickstart`: 최소 예제로 등록/송신/응답 받기
+- `Multi-node`: `multi-node` feature 기반 노드 간 전송

@@ -1,14 +1,41 @@
-#![cfg(feature = "xan-log")]
-#![cfg(feature = "bounded-channel")]
+// With `multi-node` enabled, `Actor::address()` returns `&Address` (a struct)
+// instead of `&str`. These tests are written for the single-node `&str` shape;
+// the multi-node integration coverage lives in `test_multi_node.rs` instead.
+#![cfg(not(feature = "multi-node"))]
+
+#[cfg(feature = "xan-log")]
+fn init_logger() {
+    let _ = xan_log::init_logger();
+}
+#[cfg(not(feature = "xan-log"))]
+fn init_logger() {}
+
 use crate::{Actor, ActorError, ActorSystem, Blocking, ErrorHandling, JobSpec, RunJobResult};
 use std::sync::Arc;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Construct an `ActorSystem` whose call shape works in both single-node and
+/// multi-node feature configurations.
+async fn make_system() -> ActorSystem {
+    #[cfg(not(feature = "multi-node"))]
+    {
+        ActorSystem::new(None)
+    }
+    #[cfg(feature = "multi-node")]
+    {
+        ActorSystem::new(None, None)
+            .await
+            .expect("ActorSystem::new(cluster=None) should succeed")
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "multi-node", derive(xancode::Codec))]
 pub enum MyMessage1 {
     A(String),
     C(String),
 }
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "multi-node", derive(xancode::Codec))]
 pub enum MyMessage2 {
     B(String),
 }
@@ -89,8 +116,8 @@ impl Actor for MyActor3 {
 
 #[tokio::test]
 async fn test_with_tx_cache() {
-    let _ = xan_log::init_logger();
-    let mut actor_system = ActorSystem::new(None);
+    init_logger();
+    let mut actor_system = make_system().await;
 
     let actor1 = MyActor1 {
         address: "/some/address/1/1".to_string(),
@@ -287,8 +314,8 @@ async fn test_with_tx_cache() {
 
 #[tokio::test]
 async fn test_without_tx_cache() {
-    let _ = xan_log::init_logger();
-    let mut actor_system = ActorSystem::new(None);
+    init_logger();
+    let mut actor_system = make_system().await;
 
     let actor1 = MyActor1 {
         address: "/some/address/1/1".to_string(),
@@ -485,8 +512,8 @@ async fn test_without_tx_cache() {
 
 #[tokio::test]
 async fn test_bench_with_tx_cache() {
-    let _ = xan_log::init_logger();
-    let mut actor_system = ActorSystem::new(None);
+    init_logger();
+    let mut actor_system = make_system().await;
 
     let actor = MyActor3 {
         address: "/some/address/3/1".to_string(),
@@ -519,8 +546,8 @@ async fn test_bench_with_tx_cache() {
 }
 #[tokio::test]
 async fn test_bench_without_tx_cache() {
-    let _ = xan_log::init_logger();
-    let mut actor_system = ActorSystem::new(None);
+    init_logger();
+    let mut actor_system = make_system().await;
 
     let actor = MyActor3 {
         address: "/some/address/3/1".to_string(),
