@@ -122,6 +122,13 @@ impl InterNodeRuntime {
                 .map_err(|_| ActorError::InterNodeRemote("pending map poisoned".into()))?;
             map.insert(req_id, tx);
         }
+        // From here on the pending entry must be cleaned up if we exit
+        // before `rx.await` completes — including when the outer
+        // `send_and_recv_with_timeout` cancels this future.
+        let _guard = PendingGuard {
+            pending: self.pending.clone(),
+            req_id,
+        };
         let envelope = InterNodeMessage::Call {
             actor_type: actor_type.to_string(),
             target_name: target.name.clone(),
@@ -134,9 +141,6 @@ impl InterNodeRuntime {
             .produce(&Topic::request(&target.node), envelope)
             .await
         {
-            if let Ok(mut map) = self.pending.lock() {
-                map.remove(&req_id);
-            }
             return Err(ActorError::InterNodeIo(e.to_string()));
         }
         let outcome = rx
@@ -248,6 +252,25 @@ impl InterNodeRuntime {
         });
 
         Ok(())
+    }
+}
+
+/// RAII cleanup for an entry in [`InterNodeRuntime`]'s pending-requests
+/// map. Drops the entry on scope exit whether the call returned an error,
+/// the response arrived, or the awaiting future was cancelled (e.g. by
+/// `send_and_recv_with_timeout`). Without this, a cancelled call would
+/// leave a dangling `req_id → Sender` entry that only gets reclaimed if
+/// the peer eventually replies.
+struct PendingGuard {
+    pending: PendingMap,
+    req_id: u64,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.pending.lock() {
+            map.remove(&self.req_id);
+        }
     }
 }
 

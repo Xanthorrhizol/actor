@@ -22,6 +22,12 @@ pub enum ActorError {
     /// variant for both backends.
     #[error("Failed to recv from channel")]
     ChannelRecv,
+    /// A timed `send_and_recv` (via `ActorSystem::with_timeout`) did not
+    /// receive its reply within the configured duration. Common cause in
+    /// multi-node mode: the remote peer died or the broker dropped the
+    /// in-flight request.
+    #[error("Operation timed out after {0:?}")]
+    Timeout(std::time::Duration),
     /// `address_regex` failed to compile (broadcast / restart / unregister).
     #[error(transparent)]
     AddressRegexError(#[from] regex::Error),

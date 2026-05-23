@@ -578,3 +578,69 @@ async fn test_bench_without_tx_cache() {
     info!("kill and unregister actor *");
     actor_system.unregister("*".to_string() /* address as regex */);
 }
+
+struct SlowActor {
+    pub address: String,
+}
+
+#[async_trait::async_trait]
+impl Actor for SlowActor {
+    type Message = MyMessage1;
+    type Result = MyMessage1;
+    type Error = MyError;
+
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    async fn handle(
+        &mut self,
+        msg: Arc<Self::Message>,
+    ) -> Result<Self::Result, Self::Error> {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        Ok((*msg).clone())
+    }
+}
+
+#[tokio::test]
+async fn test_send_and_recv_with_timeout_fires() {
+    init_logger();
+    let mut actor_system = make_system().await;
+
+    let actor = SlowActor {
+        address: "/slow/1".to_string(),
+    };
+    let _ = actor
+        .register(
+            &mut actor_system,
+            ErrorHandling::Stop,
+            Blocking::NonBlocking,
+            None,
+        )
+        .await;
+
+    let deadline = std::time::Duration::from_millis(100);
+    let started = std::time::Instant::now();
+    let result = actor_system
+        .send_and_recv_with_timeout::<SlowActor>(
+            "/slow/1".to_string(),
+            MyMessage1::A("hi".to_string()),
+            deadline,
+        )
+        .await;
+    let elapsed = started.elapsed();
+
+    match result {
+        Err(ActorError::Timeout(d)) => assert_eq!(d, deadline),
+        other => panic!("expected Timeout, got {:?}", other),
+    }
+    // Should return promptly when the deadline fires, not wait out the 5s
+    // handler. Allow some slack for scheduling.
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "timeout took too long: {:?}",
+        elapsed
+    );
+
+    actor_system.unregister("*".to_string());
+}
