@@ -227,67 +227,51 @@ impl ActorSystem {
             let payload_bytes = payload_bytes.clone();
             tokio::spawn(async move {
                 let mut i = 0usize;
-                if let Some(interval) = job.interval() {
-                    loop {
-                        if abort_rx.try_recv().is_ok() {
-                            drop(sub_tx);
-                            return;
-                        }
-                        if stop_rx.try_recv().is_ok() {
-                            resume_rx.recv().await;
-                        }
-                        if job.start_at() <= std::time::SystemTime::now() {
-                            i += 1;
-                            let outcome: Result<<T as Actor>::Result, ActorError> = match rt
-                                .call(&address, &actor_type, payload_bytes.clone())
-                                .await
-                            {
-                                Ok(bytes) => <<T as Actor>::Result as xancode::Codec>::decode(
-                                    &xancode::Bytes::copy_from_slice(&bytes),
-                                )
-                                .map_err(|_| {
-                                    ActorError::InterNodeDecode(format!(
-                                        "decode failed for {}",
-                                        std::any::type_name::<<T as Actor>::Result>()
-                                    ))
-                                }),
-                                Err(e) => Err(e),
-                            };
-                            let _ = sub_tx.send(outcome).await;
-                            tokio::time::sleep(interval).await;
-                            if let Some(max_iter) = job.max_iter() {
-                                if i >= max_iter {
-                                    drop(sub_tx);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    if abort_rx.try_recv().is_ok() {
+                loop {
+                    let until_start = job
+                        .start_at()
+                        .duration_since(std::time::SystemTime::now())
+                        .unwrap_or(std::time::Duration::ZERO);
+                    if !delay_or_abort(until_start, &mut abort_rx, &mut stop_rx, &mut resume_rx)
+                        .await
+                    {
                         drop(sub_tx);
                         return;
                     }
-                    if stop_rx.try_recv().is_ok() {
-                        resume_rx.recv().await;
+                    i += 1;
+                    let outcome: Result<<T as Actor>::Result, ActorError> = match rt
+                        .call(&address, &actor_type, payload_bytes.clone())
+                        .await
+                    {
+                        Ok(bytes) => <<T as Actor>::Result as xancode::Codec>::decode(
+                            &xancode::Bytes::copy_from_slice(&bytes),
+                        )
+                        .map_err(|_| {
+                            ActorError::InterNodeDecode(format!(
+                                "decode failed for {}",
+                                std::any::type_name::<<T as Actor>::Result>()
+                            ))
+                        }),
+                        Err(e) => Err(e),
+                    };
+                    let _ = sub_tx.send(outcome).await;
+                    if let Some(max_iter) = job.max_iter() {
+                        if i >= max_iter {
+                            drop(sub_tx);
+                            return;
+                        }
                     }
-                    if job.start_at() <= std::time::SystemTime::now() {
-                        let outcome: Result<<T as Actor>::Result, ActorError> = match rt
-                            .call(&address, &actor_type, payload_bytes)
-                            .await
-                        {
-                            Ok(bytes) => <<T as Actor>::Result as xancode::Codec>::decode(
-                                &xancode::Bytes::copy_from_slice(&bytes),
-                            )
-                            .map_err(|_| {
-                                ActorError::InterNodeDecode(format!(
-                                    "decode failed for {}",
-                                    std::any::type_name::<<T as Actor>::Result>()
-                                ))
-                            }),
-                            Err(e) => Err(e),
-                        };
-                        let _ = sub_tx.send(outcome).await;
+                    let interval = match job.interval() {
+                        Some(d) => d,
+                        None => {
+                            drop(sub_tx);
+                            return;
+                        }
+                    };
+                    if !delay_or_abort(interval, &mut abort_rx, &mut stop_rx, &mut resume_rx).await
+                    {
+                        drop(sub_tx);
+                        return;
                     }
                 }
             });
@@ -296,38 +280,32 @@ impl ActorSystem {
             let rt = rt.clone();
             tokio::spawn(async move {
                 let mut i = 0usize;
-                if let Some(interval) = job.interval() {
-                    loop {
-                        if abort_rx.try_recv().is_ok() {
-                            return;
-                        }
-                        if stop_rx.try_recv().is_ok() {
-                            resume_rx.recv().await;
-                        }
-                        if job.start_at() <= std::time::SystemTime::now() {
-                            i += 1;
-                            let _ = rt
-                                .fire(&address, &actor_type, payload_bytes.clone())
-                                .await;
-                            tokio::time::sleep(interval).await;
-                            if let Some(max_iter) = job.max_iter() {
-                                if i >= max_iter {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    if abort_rx.try_recv().is_ok() {
+                loop {
+                    let until_start = job
+                        .start_at()
+                        .duration_since(std::time::SystemTime::now())
+                        .unwrap_or(std::time::Duration::ZERO);
+                    if !delay_or_abort(until_start, &mut abort_rx, &mut stop_rx, &mut resume_rx)
+                        .await
+                    {
                         return;
                     }
-                    if stop_rx.try_recv().is_ok() {
-                        resume_rx.recv().await;
+                    i += 1;
+                    let _ = rt
+                        .fire(&address, &actor_type, payload_bytes.clone())
+                        .await;
+                    if let Some(max_iter) = job.max_iter() {
+                        if i >= max_iter {
+                            return;
+                        }
                     }
-                    if job.start_at() <= std::time::SystemTime::now() {
-                        let _ = rt
-                            .fire(&address, &actor_type, payload_bytes)
-                            .await;
+                    let interval = match job.interval() {
+                        Some(d) => d,
+                        None => return,
+                    };
+                    if !delay_or_abort(interval, &mut abort_rx, &mut stop_rx, &mut resume_rx).await
+                    {
+                        return;
                     }
                 }
             });
@@ -1151,60 +1129,49 @@ impl ActorSystem {
         };
         if subscribe {
             let (sub_tx, sub_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (abort_tx, abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (resume_tx, resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
             let payload = payload.clone();
             let _ = tokio::spawn(async move {
-                let mut i = 0;
-                let mut abort_rx = abort_rx;
-                let mut stop_rx = stop_rx;
-                let mut resume_rx = resume_rx;
-                if let Some(interval) = job.interval() {
-                    loop {
-                        if abort_rx.try_recv().is_ok() {
-                            drop(sub_tx);
-                            return;
-                        }
-                        if stop_rx.try_recv().is_ok() {
-                            resume_rx.recv().await;
-                        }
-                        if job.start_at() <= std::time::SystemTime::now() {
-                            i += 1;
-                            let result = match mailbox.send_and_recv(payload.clone()).await {
-                                Ok(result_any) => result_any
-                                    .downcast::<T::Result>()
-                                    .map(|x| Ok(*x))
-                                    .unwrap_or_else(|_| Err(ActorError::MessageTypeMismatch)),
-                                Err(e) => Err(e),
-                            };
-                            let _ = sub_tx.send(result).await;
-                            tokio::time::sleep(interval).await;
-                            if let Some(max_iter) = job.max_iter() {
-                                if i >= max_iter {
-                                    drop(sub_tx);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    if abort_rx.try_recv().is_ok() {
+                let mut i = 0usize;
+                loop {
+                    let until_start = job
+                        .start_at()
+                        .duration_since(std::time::SystemTime::now())
+                        .unwrap_or(std::time::Duration::ZERO);
+                    if !delay_or_abort(until_start, &mut abort_rx, &mut stop_rx, &mut resume_rx)
+                        .await
+                    {
                         drop(sub_tx);
                         return;
                     }
-                    if stop_rx.try_recv().is_ok() {
-                        resume_rx.recv().await;
+                    i += 1;
+                    let result = match mailbox.send_and_recv(payload.clone()).await {
+                        Ok(result_any) => result_any
+                            .downcast::<T::Result>()
+                            .map(|x| Ok(*x))
+                            .unwrap_or_else(|_| Err(ActorError::MessageTypeMismatch)),
+                        Err(e) => Err(e),
+                    };
+                    let _ = sub_tx.send(result).await;
+                    if let Some(max_iter) = job.max_iter() {
+                        if i >= max_iter {
+                            drop(sub_tx);
+                            return;
+                        }
                     }
-                    if job.start_at() <= std::time::SystemTime::now() {
-                        let result = match mailbox.send_and_recv(payload.clone()).await {
-                            Ok(result_any) => result_any
-                                .downcast::<T::Result>()
-                                .map(|x| Ok(*x))
-                                .unwrap_or_else(|_| Err(ActorError::MessageTypeMismatch)),
-                            Err(e) => Err(e),
-                        };
-                        let _ = sub_tx.send(result).await;
+                    let interval = match job.interval() {
+                        Some(d) => d,
+                        None => {
+                            drop(sub_tx);
+                            return;
+                        }
+                    };
+                    if !delay_or_abort(interval, &mut abort_rx, &mut stop_rx, &mut resume_rx).await
+                    {
+                        drop(sub_tx);
+                        return;
                     }
                 }
             });
@@ -1224,42 +1191,35 @@ impl ActorSystem {
                 result_subscriber_rx: Some(sub_rx),
             });
         } else {
-            let (abort_tx, abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (resume_tx, resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
             let _ = tokio::spawn(async move {
-                let mut i = 0;
-                let mut abort_rx = abort_rx;
-                let mut stop_rx = stop_rx;
-                let mut resume_rx = resume_rx;
-                if let Some(interval) = job.interval() {
-                    loop {
-                        if abort_rx.try_recv().is_ok() {
-                            return;
-                        }
-                        if stop_rx.try_recv().is_ok() {
-                            resume_rx.recv().await;
-                        }
-                        if job.start_at() <= std::time::SystemTime::now() {
-                            i += 1;
-                            let _ = mailbox.send(payload.clone()).await;
-                            tokio::time::sleep(interval).await;
-                            if let Some(max_iter) = job.max_iter() {
-                                if i >= max_iter {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    if abort_rx.try_recv().is_ok() {
+                let mut i = 0usize;
+                loop {
+                    let until_start = job
+                        .start_at()
+                        .duration_since(std::time::SystemTime::now())
+                        .unwrap_or(std::time::Duration::ZERO);
+                    if !delay_or_abort(until_start, &mut abort_rx, &mut stop_rx, &mut resume_rx)
+                        .await
+                    {
                         return;
                     }
-                    if stop_rx.try_recv().is_ok() {
-                        resume_rx.recv().await;
+                    i += 1;
+                    let _ = mailbox.send(payload.clone()).await;
+                    if let Some(max_iter) = job.max_iter() {
+                        if i >= max_iter {
+                            return;
+                        }
                     }
-                    if job.start_at() <= std::time::SystemTime::now() {
-                        let _ = mailbox.send(payload.clone()).await;
+                    let interval = match job.interval() {
+                        Some(d) => d,
+                        None => return,
+                    };
+                    if !delay_or_abort(interval, &mut abort_rx, &mut stop_rx, &mut resume_rx).await
+                    {
+                        return;
                     }
                 }
             });
@@ -1353,59 +1313,48 @@ impl ActorSystem {
         if subscribe {
             let (sub_tx, sub_rx) = tokio::sync::mpsc::channel(self.channel_size);
             let payload = payload.clone();
-            let (abort_tx, abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (resume_tx, resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
             let _ = tokio::spawn(async move {
-                let mut i = 0;
-                let mut abort_rx = abort_rx;
-                let mut stop_rx = stop_rx;
-                let mut resume_rx = resume_rx;
-                if let Some(interval) = job.interval() {
-                    loop {
-                        if abort_rx.try_recv().is_ok() {
-                            drop(sub_tx);
-                            return;
-                        }
-                        if stop_rx.try_recv().is_ok() {
-                            resume_rx.recv().await;
-                        }
-                        if job.start_at() <= std::time::SystemTime::now() {
-                            i += 1;
-                            let result = match mailbox.send_and_recv(payload.clone()).await {
-                                Ok(result_any) => result_any
-                                    .downcast::<T::Result>()
-                                    .map(|x| Ok(*x))
-                                    .unwrap_or_else(|_| Err(ActorError::MessageTypeMismatch)),
-                                Err(e) => Err(e),
-                            };
-                            let _ = sub_tx.send(result).await;
-                            tokio::time::sleep(interval).await;
-                            if let Some(max_iter) = job.max_iter() {
-                                if i >= max_iter {
-                                    drop(sub_tx);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    if abort_rx.try_recv().is_ok() {
+                let mut i = 0usize;
+                loop {
+                    let until_start = job
+                        .start_at()
+                        .duration_since(std::time::SystemTime::now())
+                        .unwrap_or(std::time::Duration::ZERO);
+                    if !delay_or_abort(until_start, &mut abort_rx, &mut stop_rx, &mut resume_rx)
+                        .await
+                    {
                         drop(sub_tx);
                         return;
                     }
-                    if stop_rx.try_recv().is_ok() {
-                        resume_rx.recv().await;
+                    i += 1;
+                    let result = match mailbox.send_and_recv(payload.clone()).await {
+                        Ok(result_any) => result_any
+                            .downcast::<T::Result>()
+                            .map(|x| Ok(*x))
+                            .unwrap_or_else(|_| Err(ActorError::MessageTypeMismatch)),
+                        Err(e) => Err(e),
+                    };
+                    let _ = sub_tx.send(result).await;
+                    if let Some(max_iter) = job.max_iter() {
+                        if i >= max_iter {
+                            drop(sub_tx);
+                            return;
+                        }
                     }
-                    if job.start_at() <= std::time::SystemTime::now() {
-                        let result = match mailbox.send_and_recv(payload.clone()).await {
-                            Ok(result_any) => result_any
-                                .downcast::<T::Result>()
-                                .map(|x| Ok(*x))
-                                .unwrap_or_else(|_| Err(ActorError::MessageTypeMismatch)),
-                            Err(e) => Err(e),
-                        };
-                        let _ = sub_tx.send(result).await;
+                    let interval = match job.interval() {
+                        Some(d) => d,
+                        None => {
+                            drop(sub_tx);
+                            return;
+                        }
+                    };
+                    if !delay_or_abort(interval, &mut abort_rx, &mut stop_rx, &mut resume_rx).await
+                    {
+                        drop(sub_tx);
+                        return;
                     }
                 }
             });
@@ -1425,42 +1374,35 @@ impl ActorSystem {
                 result_subscriber_rx: Some(sub_rx),
             });
         } else {
-            let (abort_tx, abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (resume_tx, resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
             let _ = tokio::spawn(async move {
-                let mut i = 0;
-                let mut abort_rx = abort_rx;
-                let mut stop_rx = stop_rx;
-                let mut resume_rx = resume_rx;
-                if let Some(interval) = job.interval() {
-                    loop {
-                        if abort_rx.try_recv().is_ok() {
-                            return;
-                        }
-                        if stop_rx.try_recv().is_ok() {
-                            resume_rx.recv().await;
-                        }
-                        if job.start_at() <= std::time::SystemTime::now() {
-                            i += 1;
-                            let _ = mailbox.send(payload.clone()).await;
-                            tokio::time::sleep(interval).await;
-                            if let Some(max_iter) = job.max_iter() {
-                                if i >= max_iter {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    if abort_rx.try_recv().is_ok() {
+                let mut i = 0usize;
+                loop {
+                    let until_start = job
+                        .start_at()
+                        .duration_since(std::time::SystemTime::now())
+                        .unwrap_or(std::time::Duration::ZERO);
+                    if !delay_or_abort(until_start, &mut abort_rx, &mut stop_rx, &mut resume_rx)
+                        .await
+                    {
                         return;
                     }
-                    if stop_rx.try_recv().is_ok() {
-                        resume_rx.recv().await;
+                    i += 1;
+                    let _ = mailbox.send(payload.clone()).await;
+                    if let Some(max_iter) = job.max_iter() {
+                        if i >= max_iter {
+                            return;
+                        }
                     }
-                    if job.start_at() <= std::time::SystemTime::now() {
-                        let _ = mailbox.send(payload.clone()).await;
+                    let interval = match job.interval() {
+                        Some(d) => d,
+                        None => return,
+                    };
+                    if !delay_or_abort(interval, &mut abort_rx, &mut stop_rx, &mut resume_rx).await
+                    {
+                        return;
                     }
                 }
             });
@@ -1728,6 +1670,42 @@ async fn actor_system_loop(
                 let _ = result_tx.send(job_controllers.get(&job_id).cloned());
             }
         };
+    }
+}
+// }}}
+
+// {{{ fn delay_or_abort
+/// Sleep for `duration` while staying responsive to the job's control channels.
+///
+/// Returns:
+/// - `true` if the delay elapsed normally (or was zero), or if the job was
+///   paused via `stop_tx` and later resumed via `resume_tx`.
+/// - `false` if `abort_tx` fired at any point (during the delay, or during a
+///   pause). Callers should exit immediately on `false`.
+///
+/// Replaces the older `try_recv` polling + `sleep(interval).await` shape,
+/// which had two problems: (1) abort/stop signals were only checked at the
+/// top of each iteration, so a fired abort waited up to `interval` to take
+/// effect; (2) `resume_rx.recv()` was awaited unconditionally during a stop,
+/// so abort couldn't break a paused job.
+async fn delay_or_abort(
+    duration: std::time::Duration,
+    abort_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    stop_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    resume_rx: &mut tokio::sync::mpsc::Receiver<()>,
+) -> bool {
+    if duration.is_zero() {
+        return true;
+    }
+    tokio::select! {
+        _ = tokio::time::sleep(duration) => true,
+        _ = abort_rx.recv() => false,
+        _ = stop_rx.recv() => {
+            tokio::select! {
+                _ = resume_rx.recv() => true,
+                _ = abort_rx.recv() => false,
+            }
+        }
     }
 }
 // }}}
