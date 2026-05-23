@@ -111,11 +111,15 @@ let result = system
 // Broadcast across an explicit peer set.
 let results = system
     .send_broadcast::<MyActor>(
-        "/echo/.*".into(),
+        "/echo/*".into(),
         NodeFilter::Peers(vec!["node-a".into(), "node-b".into()]),
         MyMessage::Ping("bcast".into()),
     )
     .await;
+// results.local.len()  — exact number of local actors that received it
+// results.remote.len() — number of remote peer nodes we sent envelopes to
+//                        (NOT the number of remote actors that received it)
+// results.all_ok()     — every entry on both sides succeeded
 ```
 
 `NodeFilter` variants:
@@ -124,7 +128,12 @@ let results = system
 - `Node(name)` — single named target (self or remote).
 - `Peers(Vec<name>)` — union of listed nodes.
 
-Local addresses go through the existing local fan-out (per-actor results); each remote peer is one `BroadcastFire` envelope (one result per peer).
+`send_broadcast` (multi-node) returns `BroadcastResult { local, remote }`, and the two fields **count different things**:
+
+- `local.len()` — exact number of local actors that received the message.
+- `remote.len()` — number of remote peer nodes you shipped a `BroadcastFire` envelope to. Each peer then runs its own regex match locally and dispatches to 0..N of its actors, but it's **fire-and-forget**, so no per-actor confirmation comes back. There's no way to tell from `results` how many remote actors actually got it.
+
+That's the intended trade-off: broadcasts stay a single one-shot envelope per peer, with no round trip. If you need an accurate cluster-wide actor count, this API can't give it to you — that would require a request/response variant where each peer replies with its own match count.
 
 ## Register-time rejection of foreign addresses
 

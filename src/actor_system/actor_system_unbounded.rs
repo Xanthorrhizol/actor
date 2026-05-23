@@ -523,70 +523,16 @@ impl ActorSystem {
         }
     }
 
-    /// Sends a message to all actors that match the given address regex.
-    /// It returns a vector of results, success or error for each actor.
-    /// It doesn't returns results from the actors, only whether the message was sent successfully or not.
-    pub async fn send_broadcast<T>(
+    /// Local regex fan-out helper (cached). One entry per matched local actor.
+    async fn broadcast_local_cached<T>(
         &mut self,
         address_regex: String,
-        #[cfg(feature = "multi-node")] filter: crate::inter_node::NodeFilter,
         msg: <T as Actor>::Message,
     ) -> Vec<Result<(), ActorError>>
     where
         T: Actor,
-        <T as Actor>::Message: MaybeCodec,
     {
         let actor_type = std::any::type_name::<T>();
-
-        #[cfg(feature = "multi-node")]
-        let (run_local, remote_nodes): (bool, Vec<String>) = {
-            use crate::inter_node::NodeFilter;
-            use std::collections::HashSet;
-            let raw: Vec<String> = match filter {
-                NodeFilter::SelfOnly => vec![self.node_name.clone()],
-                NodeFilter::Node(n) => vec![n],
-                NodeFilter::Peers(ns) => ns,
-            };
-            let mut seen = HashSet::new();
-            let mut local = false;
-            let mut remote = Vec::new();
-            for node in raw {
-                if !seen.insert(node.clone()) {
-                    continue;
-                }
-                if node == self.node_name {
-                    local = true;
-                } else {
-                    remote.push(node);
-                }
-            }
-            (local, remote)
-        };
-
-        #[cfg(feature = "multi-node")]
-        let mut remote_results: Vec<Result<(), ActorError>> = if !remote_nodes.is_empty() {
-            let rt = match self.inter_node.as_ref() {
-                Some(rt) => rt.clone(),
-                None => return vec![Err(ActorError::InterNodeNotConfigured)],
-            };
-            let bytes = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
-            let mut out = Vec::new();
-            for node in &remote_nodes {
-                out.push(
-                    rt.broadcast_fire(node, actor_type, &address_regex, bytes.clone())
-                        .await,
-                );
-            }
-            out
-        } else {
-            Vec::new()
-        };
-
-        #[cfg(feature = "multi-node")]
-        if !run_local {
-            return remote_results;
-        }
-
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.handler_tx.send(ActorSystemCmd::FilterAddress {
             address_regex,
@@ -606,10 +552,6 @@ impl ActorSystem {
                 std::collections::hash_map::Entry::Occupied(o) => {
                     let (cached_actor_type, tx) = o.get().clone();
                     if cached_actor_type == actor_type {
-                        debug!(
-                            "Send message to actor {} through cached_tx succeeded",
-                            address
-                        );
                         match tx.send(payload.clone()).await {
                             Ok(()) => {
                                 result.push(Ok(()));
@@ -643,17 +585,12 @@ impl ActorSystem {
                 });
                 if let Ok(Some((tx, ready))) = rx.await {
                     if ready {
-                        debug!("Saving actor {} tx to cache", address);
                         self.cache
                             .insert(address.clone(), (actor_type.to_string(), tx.clone()));
                         result.push(tx.send(payload.clone()).await);
                         break;
                     } else {
                         retry_count += 1;
-                        debug!(
-                            "Actor {} not ready, retrying... ({}/10)",
-                            address, retry_count
-                        );
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         if retry_count < 10 {
                             continue;
@@ -669,37 +606,41 @@ impl ActorSystem {
                 }
             }
         }
-
-        #[cfg(feature = "multi-node")]
-        {
-            remote_results.extend(result);
-            return remote_results;
-        }
-
-        #[cfg(not(feature = "multi-node"))]
         result
     }
 
     /// Sends a message to all actors that match the given address regex.
-    /// It returns a vector of results, success or error for each actor.
-    /// It doesn't returns results from the actors, only whether the message was sent successfully or not.
-    /// It doesn't cache the actor's tx for future use.
-    pub async fn send_broadcast_without_tx_cache<T>(
-        &self,
+    /// Returns one entry per matched local actor.
+    #[cfg(not(feature = "multi-node"))]
+    pub async fn send_broadcast<T>(
+        &mut self,
         address_regex: String,
-        #[cfg(feature = "multi-node")] filter: crate::inter_node::NodeFilter,
         msg: <T as Actor>::Message,
     ) -> Vec<Result<(), ActorError>>
     where
         T: Actor,
         <T as Actor>::Message: MaybeCodec,
     {
-        let actor_type = std::any::type_name::<T>();
+        self.broadcast_local_cached::<T>(address_regex, msg).await
+    }
 
-        #[cfg(feature = "multi-node")]
+    /// Sends a message across `filter`'s nodes. `BroadcastResult` separates
+    /// the local per-actor results from the remote per-peer envelope acks.
+    #[cfg(feature = "multi-node")]
+    pub async fn send_broadcast<T>(
+        &mut self,
+        address_regex: String,
+        filter: crate::inter_node::NodeFilter,
+        msg: <T as Actor>::Message,
+    ) -> crate::inter_node::BroadcastResult
+    where
+        T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+    {
+        use crate::inter_node::{BroadcastResult, NodeFilter};
+        use std::collections::HashSet;
+
         let (run_local, remote_nodes): (bool, Vec<String>) = {
-            use crate::inter_node::NodeFilter;
-            use std::collections::HashSet;
             let raw: Vec<String> = match filter {
                 NodeFilter::SelfOnly => vec![self.node_name.clone()],
                 NodeFilter::Node(n) => vec![n],
@@ -721,14 +662,19 @@ impl ActorSystem {
             (local, remote)
         };
 
-        #[cfg(feature = "multi-node")]
-        let mut remote_results: Vec<Result<(), ActorError>> = if !remote_nodes.is_empty() {
+        let remote: Vec<Result<(), ActorError>> = if !remote_nodes.is_empty() {
             let rt = match self.inter_node.as_ref() {
                 Some(rt) => rt.clone(),
-                None => return vec![Err(ActorError::InterNodeNotConfigured)],
+                None => {
+                    return BroadcastResult {
+                        local: Vec::new(),
+                        remote: vec![Err(ActorError::InterNodeNotConfigured)],
+                    };
+                }
             };
             let bytes = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
-            let mut out = Vec::new();
+            let actor_type = std::any::type_name::<T>();
+            let mut out = Vec::with_capacity(remote_nodes.len());
             for node in &remote_nodes {
                 out.push(
                     rt.broadcast_fire(node, actor_type, &address_regex, bytes.clone())
@@ -740,11 +686,29 @@ impl ActorSystem {
             Vec::new()
         };
 
-        #[cfg(feature = "multi-node")]
-        if !run_local {
-            return remote_results;
-        }
+        let local = if run_local {
+            self.broadcast_local_cached::<T>(address_regex, msg).await
+        } else {
+            Vec::new()
+        };
 
+        BroadcastResult { local, remote }
+    }
+
+    /// Sends a message to all actors that match the given address regex.
+    /// It returns a vector of results, success or error for each actor.
+    /// It doesn't returns results from the actors, only whether the message was sent successfully or not.
+    /// It doesn't cache the actor's tx for future use.
+    /// Local regex fan-out helper (no cache).
+    async fn broadcast_local_uncached<T>(
+        &self,
+        address_regex: String,
+        msg: <T as Actor>::Message,
+    ) -> Vec<Result<(), ActorError>>
+    where
+        T: Actor,
+    {
+        let actor_type = std::any::type_name::<T>();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.handler_tx.send(ActorSystemCmd::FilterAddress {
             address_regex,
@@ -774,10 +738,6 @@ impl ActorSystem {
                         break;
                     } else {
                         retry_count += 1;
-                        debug!(
-                            "Actor {} not ready, retrying... ({}/10)",
-                            address, retry_count
-                        );
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         if retry_count < 10 {
                             continue;
@@ -793,15 +753,90 @@ impl ActorSystem {
                 }
             }
         }
-
-        #[cfg(feature = "multi-node")]
-        {
-            remote_results.extend(result);
-            return remote_results;
-        }
-
-        #[cfg(not(feature = "multi-node"))]
         result
+    }
+
+    /// Non-cached version of `send_broadcast`. Same return-shape rules apply.
+    #[cfg(not(feature = "multi-node"))]
+    pub async fn send_broadcast_without_tx_cache<T>(
+        &self,
+        address_regex: String,
+        msg: <T as Actor>::Message,
+    ) -> Vec<Result<(), ActorError>>
+    where
+        T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+    {
+        self.broadcast_local_uncached::<T>(address_regex, msg).await
+    }
+
+    #[cfg(feature = "multi-node")]
+    pub async fn send_broadcast_without_tx_cache<T>(
+        &self,
+        address_regex: String,
+        filter: crate::inter_node::NodeFilter,
+        msg: <T as Actor>::Message,
+    ) -> crate::inter_node::BroadcastResult
+    where
+        T: Actor,
+        <T as Actor>::Message: MaybeCodec,
+    {
+        use crate::inter_node::{BroadcastResult, NodeFilter};
+        use std::collections::HashSet;
+
+        let (run_local, remote_nodes): (bool, Vec<String>) = {
+            let raw: Vec<String> = match filter {
+                NodeFilter::SelfOnly => vec![self.node_name.clone()],
+                NodeFilter::Node(n) => vec![n],
+                NodeFilter::Peers(ns) => ns,
+            };
+            let mut seen = HashSet::new();
+            let mut local = false;
+            let mut remote = Vec::new();
+            for node in raw {
+                if !seen.insert(node.clone()) {
+                    continue;
+                }
+                if node == self.node_name {
+                    local = true;
+                } else {
+                    remote.push(node);
+                }
+            }
+            (local, remote)
+        };
+
+        let remote: Vec<Result<(), ActorError>> = if !remote_nodes.is_empty() {
+            let rt = match self.inter_node.as_ref() {
+                Some(rt) => rt.clone(),
+                None => {
+                    return BroadcastResult {
+                        local: Vec::new(),
+                        remote: vec![Err(ActorError::InterNodeNotConfigured)],
+                    };
+                }
+            };
+            let bytes = <<T as Actor>::Message as xancode::Codec>::encode(&msg).to_vec();
+            let actor_type = std::any::type_name::<T>();
+            let mut out = Vec::with_capacity(remote_nodes.len());
+            for node in &remote_nodes {
+                out.push(
+                    rt.broadcast_fire(node, actor_type, &address_regex, bytes.clone())
+                        .await,
+                );
+            }
+            out
+        } else {
+            Vec::new()
+        };
+
+        let local = if run_local {
+            self.broadcast_local_uncached::<T>(address_regex, msg).await
+        } else {
+            Vec::new()
+        };
+
+        BroadcastResult { local, remote }
     }
 
     /// Sends a message to a specific actor and waits for the result.

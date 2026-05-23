@@ -3,7 +3,7 @@ pub mod decoder;
 pub mod dispatcher;
 pub mod envelope;
 
-pub use address::{Address, NodeFilter};
+pub use address::{Address, BroadcastResult, NodeFilter};
 pub use decoder::{
     ActorTypeFn, DecodeMessageFn, EncodeResultFn, InterNodeDecoder, decode_codec,
     decode_message_for, encode_codec, encode_result_for, type_name_of,

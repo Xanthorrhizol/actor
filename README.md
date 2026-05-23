@@ -362,14 +362,26 @@ let result = system
 // Broadcast across a known peer set.
 let results = system
     .send_broadcast::<MyActor>(
-        "/echo/.*".into(),
+        "/echo/*".into(),
         NodeFilter::Peers(vec!["node-a".into(), "node-b".into()]),
         MyMessage::Ping("bcast".into()),
     )
     .await;
+// results: BroadcastResult { local: Vec<Result<...>>, remote: Vec<Result<...>> }
+// results.local.len()  → number of matched local actors (accurate)
+// results.remote.len() → number of remote peers we shipped a BroadcastFire to
+//                        (NOT the number of remote actors that received it)
+// results.all_ok()     → every entry on both sides succeeded
 ```
 
-`NodeFilter` is `SelfOnly`, `Node(name)`, or `Peers(Vec<name>)`. Local addresses go through the existing local fan-out (per-actor results); each remote peer is sent one `BroadcastFire` envelope (one result per peer). The receiver matches the regex against its own local addresses and dispatches.
+`NodeFilter` is `SelfOnly`, `Node(name)`, or `Peers(Vec<name>)`. Under `multi-node`, `send_broadcast` returns `BroadcastResult { local, remote }`.
+
+The two fields **count different things**:
+
+- `local.len()` is the exact number of local actors that received the message.
+- `remote.len()` is the number of remote peer nodes you shipped a `BroadcastFire` envelope to. Each peer then runs its own regex match against its local actors and dispatches to 0..N of them — but **fire-and-forget**, so no per-actor confirmation comes back. There's no way to tell from `results` how many remote actors actually received it.
+
+If you need an accurate cluster-wide actor count, this fire-style broadcast can't provide it; that would require a request/response variant. (Without `multi-node`, the signature is unchanged: `Vec<Result<(), ActorError>>` over local matches.)
 
 #### Trying to register an address you don't own
 

@@ -278,17 +278,16 @@ async fn broadcast_fans_out_local_and_remote() {
     // Peers fan-out includes both self and remote node.
     let results = node_a
         .send_broadcast::<RemoteActor>(
-            "/bc/.*".into(),
+            "/bc/*".into(),
             NodeFilter::Peers(vec!["node-a6".into(), "node-b6".into()]),
             RemoteMsg::Bye,
         )
         .await;
 
-    // 1 remote BroadcastFire envelope (to node-b6) + 1 local fan-out match (/bc/local/1).
-    assert_eq!(results.len(), 2, "expected 2 entries, got {:?}", results);
-    for r in &results {
-        assert!(r.is_ok(), "fan-out element failed: {:?}", r);
-    }
+    // local: 1 match on node-a6 (/bc/local/1). remote: 1 BroadcastFire envelope to node-b6.
+    assert_eq!(results.local.len(), 1, "expected 1 local match, got {:?}", results.local);
+    assert_eq!(results.remote.len(), 1, "expected 1 remote peer ack, got {:?}", results.remote);
+    assert!(results.all_ok(), "fan-out failed: {:?}", results);
 }
 
 /// Mirror of `test_bounded::test_with_tx_cache` adapted for the multi-node
@@ -353,15 +352,9 @@ async fn basic_behavior_with_tx_cache() {
             RemoteMsg::Bye,
         )
         .await;
-    assert_eq!(
-        bc.len(),
-        3,
-        "expected 2 local fan-out + 1 remote BroadcastFire, got {:?}",
-        bc
-    );
-    for r in &bc {
-        assert!(r.is_ok(), "broadcast fan-out element failed: {:?}", r);
-    }
+    assert_eq!(bc.local.len(), 2, "expected 2 local matches, got {:?}", bc.local);
+    assert_eq!(bc.remote.len(), 1, "expected 1 remote peer ack, got {:?}", bc.remote);
+    assert!(bc.all_ok(), "broadcast failed: {:?}", bc);
 
     // send_and_recv against a local actor.
     let resp = sys
@@ -520,8 +513,9 @@ async fn basic_behavior_without_tx_cache() {
             RemoteMsg::Bye,
         )
         .await;
-    assert_eq!(bc.len(), 3, "expected 2 local + 1 remote, got {:?}", bc);
-    assert!(bc.iter().all(|r| r.is_ok()));
+    assert_eq!(bc.local.len(), 2, "expected 2 local matches, got {:?}", bc.local);
+    assert_eq!(bc.remote.len(), 1, "expected 1 remote peer ack, got {:?}", bc.remote);
+    assert!(bc.all_ok());
 
     // send_and_recv non-cached.
     let resp = sys

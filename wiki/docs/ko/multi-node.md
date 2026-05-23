@@ -111,11 +111,15 @@ let result = system
 // 명시 피어 집합으로 브로드캐스트.
 let results = system
     .send_broadcast::<MyActor>(
-        "/echo/.*".into(),
+        "/echo/*".into(),
         NodeFilter::Peers(vec!["node-a".into(), "node-b".into()]),
         MyMessage::Ping("bcast".into()),
     )
     .await;
+// results.local.len()  — 메시지를 받은 로컬 actor의 정확한 수
+// results.remote.len() — envelope을 보낸 원격 peer 노드의 수
+//                        (원격에서 실제로 메시지를 받은 actor 수가 아님)
+// results.all_ok()     — 양쪽 모두 Ok면 true
 ```
 
 `NodeFilter` variant:
@@ -124,7 +128,12 @@ let results = system
 - `Node(name)` — 하나의 명명된 대상(self일 수도, 원격일 수도).
 - `Peers(Vec<name>)` — 나열된 노드들의 합집합.
 
-로컬 주소는 기존 로컬 fan-out을 거치고(per-actor 결과), 원격 피어는 각각 `BroadcastFire` envelope 한 개씩(per-peer 결과 한 개).
+`send_broadcast`(multi-node)는 `BroadcastResult { local, remote }`를 반환합니다. 두 필드는 **세는 대상이 다릅니다**:
+
+- `local.len()` — 메시지를 받은 로컬 actor의 정확한 수.
+- `remote.len()` — `BroadcastFire` envelope을 보낸 원격 peer 노드의 수. 각 peer는 자기 로컬 regex 매칭 후 0~N개 actor로 dispatch하지만, **fire-and-forget**이라 per-actor 확인이 호출자에게 안 돌아옵니다. `results`만으로는 원격에서 실제로 메시지를 받은 actor가 몇 개인지 알 수 없습니다.
+
+이건 설계상의 trade-off입니다: broadcast를 round-trip 없는 가벼운 envelope 한 방으로 유지하기 위해 정확도를 포기. 클러스터 전역의 actor 단위 카운트가 필요하다면 이 API로는 불가능하고, 각 peer가 자기 매치 수를 응답으로 돌려주는 request/response 변형이 필요합니다.
 
 ## 외부 노드 주소 등록 거부
 
