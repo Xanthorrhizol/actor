@@ -29,13 +29,13 @@ async fn make_system() -> ActorSystem {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "multi-node", derive(xancode::Codec))]
 pub enum MyMessage1 {
     A(String),
     C(String),
 }
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "multi-node", derive(xancode::Codec))]
 pub enum MyMessage2 {
     B(String),
