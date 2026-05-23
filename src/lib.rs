@@ -20,6 +20,7 @@
 
 pub mod actor;
 pub mod actor_system;
+pub mod channel;
 mod error;
 #[cfg(feature = "multi-node")]
 pub mod inter_node;
@@ -34,9 +35,10 @@ pub use error::ActorError;
 pub use types::{JobController, JobSpec, Message, RunJobResult};
 pub(crate) use types::{Mailbox, TypedMailbox};
 
-/// Default per-actor mailbox capacity for the `bounded-channel` feature.
-/// Used whenever `Actor::register`'s `channel_size` argument is `None`.
-#[cfg(feature = "bounded-channel")]
+/// Default per-actor mailbox capacity. Used whenever
+/// `Actor::register`'s `channel_size` argument is `None`. Active under
+/// `bounded-channel`; ignored under `unbounded-channel` but kept defined
+/// so the unified API surface compiles.
 pub(crate) const CHANNEL_SIZE: usize = 4096;
 
 #[macro_use]

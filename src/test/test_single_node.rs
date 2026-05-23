@@ -1,4 +1,3 @@
-#![cfg(feature = "unbounded-channel")]
 // With `multi-node` enabled, `Actor::address()` returns `&Address` (a struct)
 // instead of `&str`. These tests are written for the single-node `&str` shape;
 // the multi-node integration coverage lives in `test_multi_node.rs` instead.
@@ -19,11 +18,11 @@ use std::sync::Arc;
 async fn make_system() -> ActorSystem {
     #[cfg(not(feature = "multi-node"))]
     {
-        ActorSystem::new()
+        ActorSystem::new(None)
     }
     #[cfg(feature = "multi-node")]
     {
-        ActorSystem::new(None)
+        ActorSystem::new(None, None)
             .await
             .expect("ActorSystem::new(cluster=None) should succeed")
     }
@@ -124,7 +123,12 @@ async fn test_with_tx_cache() {
         address: "/some/address/1/1".to_string(),
     };
     let _ = actor1
-        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .register(
+            &mut actor_system,
+            ErrorHandling::Stop,
+            Blocking::Blocking,
+            None,
+        )
         .await;
 
     let actor2 = MyActor2 {
@@ -135,6 +139,7 @@ async fn test_with_tx_cache() {
             &mut actor_system,
             ErrorHandling::Stop,
             Blocking::NonBlocking,
+            None,
         )
         .await;
 
@@ -142,7 +147,12 @@ async fn test_with_tx_cache() {
         address: "/some/address/1/2".to_string(),
     };
     let _ = actor3
-        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .register(
+            &mut actor_system,
+            ErrorHandling::Stop,
+            Blocking::Blocking,
+            None,
+        )
         .await;
 
     let actor3_duplicated = MyActor2 {
@@ -157,7 +167,8 @@ async fn test_with_tx_cache() {
             .register(
                 &mut actor_system,
                 ErrorHandling::Stop,
-                Blocking::NonBlocking
+                Blocking::NonBlocking,
+                None,
             )
             .await
             .err()
@@ -168,7 +179,12 @@ async fn test_with_tx_cache() {
         address: "/some/address/3/1".to_string(),
     };
     let _ = actor1_ghost
-        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .register(
+            &mut actor_system,
+            ErrorHandling::Stop,
+            Blocking::Blocking,
+            None,
+        )
         .await;
 
     let _ = actor_system
@@ -305,7 +321,12 @@ async fn test_without_tx_cache() {
         address: "/some/address/1/1".to_string(),
     };
     let _ = actor1
-        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .register(
+            &mut actor_system,
+            ErrorHandling::Stop,
+            Blocking::Blocking,
+            None,
+        )
         .await;
 
     let actor2 = MyActor2 {
@@ -316,6 +337,7 @@ async fn test_without_tx_cache() {
             &mut actor_system,
             ErrorHandling::Stop,
             Blocking::NonBlocking,
+            None,
         )
         .await;
 
@@ -323,7 +345,12 @@ async fn test_without_tx_cache() {
         address: "/some/address/1/2".to_string(),
     };
     let _ = actor3
-        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .register(
+            &mut actor_system,
+            ErrorHandling::Stop,
+            Blocking::Blocking,
+            None,
+        )
         .await;
 
     let actor3_duplicated = MyActor2 {
@@ -338,7 +365,8 @@ async fn test_without_tx_cache() {
             .register(
                 &mut actor_system,
                 ErrorHandling::Stop,
-                Blocking::NonBlocking
+                Blocking::NonBlocking,
+                None,
             )
             .await
             .err()
@@ -349,7 +377,12 @@ async fn test_without_tx_cache() {
         address: "/some/address/3/1".to_string(),
     };
     let _ = actor1_ghost
-        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .register(
+            &mut actor_system,
+            ErrorHandling::Stop,
+            Blocking::Blocking,
+            None,
+        )
         .await;
 
     let _ = actor_system
@@ -369,18 +402,6 @@ async fn test_without_tx_cache() {
             .await
             .unwrap()
     );
-
-    info!(
-        "[{}] send to wrong address with same message type -> MyActor3",
-        "/some/address/1/1",
-    );
-    actor_system
-        .send_without_tx_cache::<MyActor3>(
-            "/some/address/1/1".to_string(),    /* address */
-            MyMessage1::A("wrong".to_string()), /* message */
-        )
-        .await
-        .unwrap_err();
 
     // restart actor
     actor_system.restart("/some/address/1/*".to_string() /* address as regex */);
@@ -402,6 +423,18 @@ async fn test_without_tx_cache() {
         )
         .await
         .unwrap();
+
+    info!(
+        "[{}] send to wrong address with same message type -> MyActor3",
+        "/some/address/1/1",
+    );
+    actor_system
+        .send_without_tx_cache::<MyActor3>(
+            "/some/address/1/1".to_string(),    /* address */
+            MyMessage1::A("wrong".to_string()), /* message */
+        )
+        .await
+        .unwrap_err();
 
     let job = JobSpec::new(
         Some(2),                                 /* max_iter */
@@ -486,7 +519,12 @@ async fn test_bench_with_tx_cache() {
         address: "/some/address/3/1".to_string(),
     };
     let _ = actor
-        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .register(
+            &mut actor_system,
+            ErrorHandling::Stop,
+            Blocking::Blocking,
+            None,
+        )
         .await;
     let now = std::time::Instant::now();
     let s = String::from_utf8(vec![0; 1024 * 1024]).unwrap();
@@ -515,7 +553,12 @@ async fn test_bench_without_tx_cache() {
         address: "/some/address/3/1".to_string(),
     };
     let _ = actor
-        .register(&mut actor_system, ErrorHandling::Stop, Blocking::Blocking)
+        .register(
+            &mut actor_system,
+            ErrorHandling::Stop,
+            Blocking::Blocking,
+            None,
+        )
         .await;
     let now = std::time::Instant::now();
     let s = String::from_utf8(vec![0; 1024 * 1024]).unwrap();

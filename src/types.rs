@@ -1,3 +1,4 @@
+use crate::channel;
 use crate::{ActorError, actor::Actor};
 use async_trait::async_trait;
 use std::any::Any;
@@ -9,43 +10,23 @@ use std::sync::Arc;
 pub(crate) trait Messenger {
     type TargetActor: Actor;
 
-    #[cfg(feature = "unbounded-channel")]
-    fn send(
-        tx: tokio::sync::mpsc::UnboundedSender<Message<Self::TargetActor>>,
-        msg: Arc<<Self::TargetActor as Actor>::Message>,
-    ) -> Result<(), ActorError> {
-        tx.send(Message::new(msg, None))
-            .map_err(|e| ActorError::UnboundedChannelSend(e.to_string()))
-    }
-    #[cfg(feature = "bounded-channel")]
     async fn send(
-        tx: tokio::sync::mpsc::Sender<Message<Self::TargetActor>>,
+        tx: channel::Sender<Message<Self::TargetActor>>,
         msg: Arc<<Self::TargetActor as Actor>::Message>,
     ) -> Result<(), ActorError> {
-        tx.send(Message::new(msg, None))
+        channel::send(&tx, Message::new(msg, None))
             .await
-            .map_err(|e| ActorError::BoundedChannelSend(e.to_string()))
+            .map_err(|e| ActorError::ChannelSend(e.to_string()))
     }
 
-    #[cfg(feature = "unbounded-channel")]
     async fn send_and_recv(
-        tx: tokio::sync::mpsc::UnboundedSender<Message<Self::TargetActor>>,
+        tx: channel::Sender<Message<Self::TargetActor>>,
         msg: Arc<<Self::TargetActor as Actor>::Message>,
     ) -> Result<<Self::TargetActor as Actor>::Result, ActorError> {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        tx.send(Message::new(msg, Some(result_tx)))
-            .map_err(|e| ActorError::UnboundedChannelSend(e.to_string()))?;
-        Ok(result_rx.await?)
-    }
-    #[cfg(feature = "bounded-channel")]
-    async fn send_and_recv(
-        tx: tokio::sync::mpsc::Sender<Message<Self::TargetActor>>,
-        msg: Arc<<Self::TargetActor as Actor>::Message>,
-    ) -> Result<<Self::TargetActor as Actor>::Result, ActorError> {
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        tx.send(Message::new(msg, Some(result_tx)))
+        channel::send(&tx, Message::new(msg, Some(result_tx)))
             .await
-            .map_err(|e| ActorError::BoundedChannelSend(e.to_string()))?;
+            .map_err(|e| ActorError::ChannelSend(e.to_string()))?;
         Ok(result_rx.await?)
     }
 }
@@ -68,30 +49,18 @@ pub trait Mailbox: Send + Sync {
         msg: Arc<dyn Any + Send + Sync>,
     ) -> Result<Box<dyn Any + Send>, ActorError>;
 }
+
 /// Concrete `Mailbox` for a specific actor type `A`. Holds the channel
 /// sender to the actor's run loop and performs the type-safe downcast on
 /// each send. Constructed in `Actor::run_actor` and erased to
 /// `Arc<dyn Mailbox>` for storage in the system's actor map.
-#[cfg(feature = "unbounded-channel")]
 pub struct TypedMailbox<A: Actor + Send + Sync> {
-    tx: tokio::sync::mpsc::UnboundedSender<Message<A>>,
-}
-#[cfg(feature = "bounded-channel")]
-pub struct TypedMailbox<A: Actor + Send + Sync> {
-    tx: tokio::sync::mpsc::Sender<Message<A>>,
+    tx: channel::Sender<Message<A>>,
 }
 
-#[cfg(feature = "unbounded-channel")]
 impl<A: Actor + Send + Sync> TypedMailbox<A> {
     /// Wrap an mpsc sender. Only called from `Actor::run_actor`.
-    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<Message<A>>) -> Self {
-        Self { tx }
-    }
-}
-#[cfg(feature = "bounded-channel")]
-impl<A: Actor + Send + Sync> TypedMailbox<A> {
-    /// Wrap an mpsc sender. Only called from `Actor::run_actor`.
-    pub fn new(tx: tokio::sync::mpsc::Sender<Message<A>>) -> Self {
+    pub fn new(tx: channel::Sender<Message<A>>) -> Self {
         Self { tx }
     }
 }
@@ -107,13 +76,6 @@ where
     A::Message: Any + Send + Sync + 'static,
     A::Result: Any + Send + 'static,
 {
-    #[cfg(feature = "unbounded-channel")]
-    async fn send(&self, msg: Arc<dyn Any + Send + Sync>) -> Result<(), ActorError> {
-        let msg = Arc::downcast::<A::Message>(msg).map_err(|_| ActorError::MessageTypeMismatch)?;
-        <Self as Messenger>::send(self.tx.clone(), msg)
-    }
-
-    #[cfg(feature = "bounded-channel")]
     async fn send(&self, msg: Arc<dyn Any + Send + Sync>) -> Result<(), ActorError> {
         let msg = Arc::downcast::<A::Message>(msg).map_err(|_| ActorError::MessageTypeMismatch)?;
         <Self as Messenger>::send(self.tx.clone(), msg).await
@@ -264,7 +226,6 @@ impl Default for JobSpec {
 /// iteration's outcome is pushed onto it. When the job ends (max_iter
 /// reached, aborted, or single-shot completion) the channel is closed,
 /// so `recv()` returning `None` is the natural termination signal.
-#[cfg(feature = "bounded-channel")]
 #[derive(Debug)]
 pub struct RunJobResult<T: Actor> {
     /// Identifier you pass to `abort_job` / `stop_job` / `resume_job`.
@@ -272,18 +233,7 @@ pub struct RunJobResult<T: Actor> {
     pub job_id: String,
     /// Per-iteration result stream. `None` when the job was submitted
     /// with `subscribe = false` (fire-and-forget).
-    pub result_subscriber_rx:
-        Option<tokio::sync::mpsc::Receiver<Result<<T as Actor>::Result, ActorError>>>,
-}
-
-#[cfg(feature = "unbounded-channel")]
-#[derive(Debug)]
-pub struct RunJobResult<T: Actor> {
-    /// Identifier you pass to `abort_job` / `stop_job` / `resume_job`.
-    pub job_id: String,
-    /// Per-iteration result stream when `subscribe = true`, else `None`.
-    pub result_subscriber_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<Result<<T as Actor>::Result, ActorError>>>,
+    pub result_subscriber_rx: Option<channel::Receiver<Result<<T as Actor>::Result, ActorError>>>,
 }
 
 /// Control-plane senders for a running job, kept by `actor_system_loop`
@@ -293,26 +243,14 @@ pub struct RunJobResult<T: Actor> {
 ///
 /// Users don't construct or inspect this directly — it lives behind the
 /// `abort_job` / `stop_job` / `resume_job` methods on `ActorSystem`.
-#[cfg(feature = "bounded-channel")]
 #[derive(Clone)]
 pub struct JobController {
     /// Signal the job loop to exit immediately. Honored at every wait
     /// point (`start_at`, pause-for-resume, inter-iteration sleep).
-    pub abort_tx: tokio::sync::mpsc::Sender<()>,
+    pub abort_tx: channel::Sender<()>,
     /// Signal the job loop to pause after the current iteration. The
     /// loop then waits on `resume_tx` (or `abort_tx`) before continuing.
-    pub stop_tx: tokio::sync::mpsc::Sender<()>,
+    pub stop_tx: channel::Sender<()>,
     /// Signal a stopped job to continue iterating.
-    pub resume_tx: tokio::sync::mpsc::Sender<()>,
-}
-
-#[cfg(feature = "unbounded-channel")]
-#[derive(Clone)]
-pub struct JobController {
-    /// Signal the job loop to exit immediately.
-    pub abort_tx: tokio::sync::mpsc::UnboundedSender<()>,
-    /// Signal the job loop to pause after the current iteration.
-    pub stop_tx: tokio::sync::mpsc::UnboundedSender<()>,
-    /// Signal a stopped job to continue iterating.
-    pub resume_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    pub resume_tx: channel::Sender<()>,
 }

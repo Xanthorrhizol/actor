@@ -1,3 +1,4 @@
+use crate::channel::{self, SendAsync};
 use crate::{
     Actor, ActorError, CHANNEL_SIZE, JobController, JobSpec, LifeCycle, Mailbox, MaybeCodec,
     RunJobResult,
@@ -27,8 +28,8 @@ pub enum ActorSystemCmd {
         #[cfg(feature = "multi-node")]
         address: crate::inter_node::Address,
         mailbox: Arc<dyn Mailbox>,
-        restart_tx: tokio::sync::mpsc::Sender<()>,
-        kill_tx: tokio::sync::mpsc::Sender<()>,
+        restart_tx: channel::Sender<()>,
+        kill_tx: channel::Sender<()>,
         life_cycle: LifeCycle,
         result_tx: tokio::sync::oneshot::Sender<Result<(), ActorError>>,
         is_restarted: bool,
@@ -98,7 +99,7 @@ pub enum ActorSystemCmd {
 /// xanq broker connection; `send`/`send_and_recv`/`run_job` automatically
 /// route to the right node based on `Address::node`.
 pub struct ActorSystem {
-    handler_tx: tokio::sync::mpsc::Sender<ActorSystemCmd>,
+    handler_tx: channel::Sender<ActorSystemCmd>,
     cache: HashMap<String, (String, Arc<dyn Mailbox>)>,
     channel_size: usize,
     /// The cluster identity of this system. Always set when `multi-node` is on.
@@ -113,7 +114,7 @@ pub struct ActorSystem {
 #[cfg(not(feature = "multi-node"))]
 impl Default for ActorSystem {
     fn default() -> Self {
-        let (handler_tx, handler_rx) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
+        let (handler_tx, handler_rx) = channel::channel(CHANNEL_SIZE);
         let mut me = Self {
             handler_tx,
             cache: HashMap::new(),
@@ -134,7 +135,7 @@ impl ActorSystem {
     #[cfg(not(feature = "multi-node"))]
     pub fn new(channel_size: Option<usize>) -> Self {
         let (handler_tx, handler_rx) =
-            tokio::sync::mpsc::channel(channel_size.unwrap_or(CHANNEL_SIZE));
+            channel::channel(channel_size.unwrap_or(CHANNEL_SIZE));
         let mut me = Self {
             handler_tx,
             cache: HashMap::new(),
@@ -169,7 +170,7 @@ impl ActorSystem {
         broker_addr: Option<String>,
     ) -> Result<Self, ActorError> {
         let (handler_tx, handler_rx) =
-            tokio::sync::mpsc::channel(channel_size.unwrap_or(CHANNEL_SIZE));
+            channel::channel(channel_size.unwrap_or(CHANNEL_SIZE));
         let inter_node = match broker_addr {
             Some(addr) => Some(InterNodeRuntime::connect(node_name.clone(), addr).await?),
             None => None,
@@ -214,7 +215,7 @@ impl ActorSystem {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
-            .send(ActorSystemCmd::FindActor {
+            .send_async(ActorSystemCmd::FindActor {
                 actor_type,
                 address: address.clone(),
                 result_tx: tx,
@@ -249,7 +250,7 @@ impl ActorSystem {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
-            .send(ActorSystemCmd::FindActor {
+            .send_async(ActorSystemCmd::FindActor {
                 actor_type,
                 address: address.clone(),
                 result_tx: tx,
@@ -288,12 +289,12 @@ impl ActorSystem {
         let actor_type = std::any::type_name::<T>().to_string();
         let channel_size = self.channel_size;
 
-        let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(channel_size);
-        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(channel_size);
-        let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(channel_size);
+        let (abort_tx, mut abort_rx) = channel::channel(channel_size);
+        let (stop_tx, mut stop_rx) = channel::channel(channel_size);
+        let (resume_tx, mut resume_rx) = channel::channel(channel_size);
 
         let result_subscriber_rx = if subscribe {
-            let (sub_tx, sub_rx) = tokio::sync::mpsc::channel(channel_size);
+            let (sub_tx, sub_rx) = channel::channel(channel_size);
             let rt = rt.clone();
             let address = address.clone();
             let actor_type = actor_type.clone();
@@ -327,7 +328,7 @@ impl ActorSystem {
                         }),
                         Err(e) => Err(e),
                     };
-                    let _ = sub_tx.send(outcome).await;
+                    let _ = sub_tx.send_async(outcome).await;
                     if let Some(max_iter) = job.max_iter() {
                         if i >= max_iter {
                             drop(sub_tx);
@@ -387,7 +388,7 @@ impl ActorSystem {
 
         let _ = self
             .handler_tx
-            .send(ActorSystemCmd::RegisterJob {
+            .send_async(ActorSystemCmd::RegisterJob {
                 job_id: job_id.clone(),
                 controller: JobController {
                     abort_tx,
@@ -411,7 +412,7 @@ impl ActorSystem {
     /// without going through the helper methods. The channel is the same
     /// one all built-in methods use, so commands are interleaved in
     /// arrival order with regular traffic.
-    pub fn handler_tx(&self) -> tokio::sync::mpsc::Sender<ActorSystemCmd> {
+    pub fn handler_tx(&self) -> channel::Sender<ActorSystemCmd> {
         self.handler_tx.clone()
     }
 
@@ -424,7 +425,7 @@ impl ActorSystem {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
-            .send(ActorSystemCmd::FilterAddress {
+            .send_async(ActorSystemCmd::FilterAddress {
                 address_regex,
                 result_tx: tx,
             })
@@ -450,11 +451,10 @@ impl ActorSystem {
     ///
     /// [`filter_address`]: Self::filter_address
     pub fn restart(&mut self, address_regex: String) {
-        if let Err(e) = self
-            .handler_tx
-            .try_send(ActorSystemCmd::Restart { address_regex })
+        if let Err(e) =
+            channel::try_send(&self.handler_tx, ActorSystemCmd::Restart { address_regex })
         {
-            error!("Send restart command failed: {:?}", e);
+            error!("Send restart command failed: {}", e);
         }
     }
 
@@ -466,11 +466,10 @@ impl ActorSystem {
     /// `"*"` matches everything — convenient for "kill them all" at
     /// shutdown.
     pub fn unregister(&mut self, address_regex: String) {
-        if let Err(e) = self
-            .handler_tx
-            .try_send(ActorSystemCmd::Unregister { address_regex })
+        if let Err(e) =
+            channel::try_send(&self.handler_tx, ActorSystemCmd::Unregister { address_regex })
         {
-            error!("Send unregister command failed: {:?}", e);
+            error!("Send unregister command failed: {}", e);
         }
     }
 
@@ -548,7 +547,7 @@ impl ActorSystem {
             }
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::FindActor {
+                .send_async(ActorSystemCmd::FindActor {
                     actor_type: actor_type.to_string(),
                     address: address.clone(),
                     result_tx: tx,
@@ -622,7 +621,7 @@ impl ActorSystem {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::FindActor {
+                .send_async(ActorSystemCmd::FindActor {
                     actor_type: actor_type.to_string(),
                     address: address.clone(),
                     result_tx: tx,
@@ -665,7 +664,7 @@ impl ActorSystem {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
-            .send(ActorSystemCmd::FilterAddress {
+            .send_async(ActorSystemCmd::FilterAddress {
                 address_regex,
                 result_tx: tx,
             })
@@ -712,7 +711,7 @@ impl ActorSystem {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let _ = self
                     .handler_tx
-                    .send(ActorSystemCmd::FindActor {
+                    .send_async(ActorSystemCmd::FindActor {
                         actor_type: actor_type.to_string(),
                         address: address.clone(),
                         result_tx: tx,
@@ -860,7 +859,7 @@ impl ActorSystem {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
-            .send(ActorSystemCmd::FilterAddress {
+            .send_async(ActorSystemCmd::FilterAddress {
                 address_regex,
                 result_tx: tx,
             })
@@ -880,7 +879,7 @@ impl ActorSystem {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let _ = self
                     .handler_tx
-                    .send(ActorSystemCmd::FindActor {
+                    .send_async(ActorSystemCmd::FindActor {
                         actor_type: actor_type.to_string(),
                         address: address.clone(),
                         result_tx: tx,
@@ -1095,7 +1094,7 @@ impl ActorSystem {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::FindActor {
+                .send_async(ActorSystemCmd::FindActor {
                     actor_type: actor_type.to_string(),
                     address: address.clone(),
                     result_tx: tx,
@@ -1178,7 +1177,7 @@ impl ActorSystem {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::FindActor {
+                .send_async(ActorSystemCmd::FindActor {
                     actor_type: actor_type.to_string(),
                     address: address.clone(),
                     result_tx: tx,
@@ -1273,7 +1272,7 @@ impl ActorSystem {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::FindActor {
+                .send_async(ActorSystemCmd::FindActor {
                     actor_type: actor_type.to_string(),
                     address: address.clone(),
                     result_tx: tx,
@@ -1306,10 +1305,10 @@ impl ActorSystem {
             }
         };
         if subscribe {
-            let (sub_tx, sub_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (sub_tx, sub_rx) = channel::channel(self.channel_size);
+            let (abort_tx, mut abort_rx) = channel::channel(self.channel_size);
+            let (stop_tx, mut stop_rx) = channel::channel(self.channel_size);
+            let (resume_tx, mut resume_rx) = channel::channel(self.channel_size);
             let payload = payload.clone();
             let _ = tokio::spawn(async move {
                 let mut i = 0usize;
@@ -1332,7 +1331,7 @@ impl ActorSystem {
                             .unwrap_or_else(|_| Err(ActorError::MessageTypeMismatch)),
                         Err(e) => Err(e),
                     };
-                    let _ = sub_tx.send(result).await;
+                    let _ = sub_tx.send_async(result).await;
                     if let Some(max_iter) = job.max_iter() {
                         if i >= max_iter {
                             drop(sub_tx);
@@ -1355,7 +1354,7 @@ impl ActorSystem {
             });
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::RegisterJob {
+                .send_async(ActorSystemCmd::RegisterJob {
                     job_id: job_id.clone(),
                     controller: JobController {
                         abort_tx,
@@ -1369,9 +1368,9 @@ impl ActorSystem {
                 result_subscriber_rx: Some(sub_rx),
             });
         } else {
-            let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (abort_tx, mut abort_rx) = channel::channel(self.channel_size);
+            let (stop_tx, mut stop_rx) = channel::channel(self.channel_size);
+            let (resume_tx, mut resume_rx) = channel::channel(self.channel_size);
             let _ = tokio::spawn(async move {
                 let mut i = 0usize;
                 loop {
@@ -1403,7 +1402,7 @@ impl ActorSystem {
             });
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::RegisterJob {
+                .send_async(ActorSystemCmd::RegisterJob {
                     job_id: job_id.clone(),
                     controller: JobController {
                         abort_tx,
@@ -1461,7 +1460,7 @@ impl ActorSystem {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::FindActor {
+                .send_async(ActorSystemCmd::FindActor {
                     actor_type: actor_type.to_string(),
                     address: address.clone(),
                     result_tx: tx,
@@ -1489,11 +1488,11 @@ impl ActorSystem {
             }
         };
         if subscribe {
-            let (sub_tx, sub_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (sub_tx, sub_rx) = channel::channel(self.channel_size);
             let payload = payload.clone();
-            let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (abort_tx, mut abort_rx) = channel::channel(self.channel_size);
+            let (stop_tx, mut stop_rx) = channel::channel(self.channel_size);
+            let (resume_tx, mut resume_rx) = channel::channel(self.channel_size);
             let _ = tokio::spawn(async move {
                 let mut i = 0usize;
                 loop {
@@ -1515,7 +1514,7 @@ impl ActorSystem {
                             .unwrap_or_else(|_| Err(ActorError::MessageTypeMismatch)),
                         Err(e) => Err(e),
                     };
-                    let _ = sub_tx.send(result).await;
+                    let _ = sub_tx.send_async(result).await;
                     if let Some(max_iter) = job.max_iter() {
                         if i >= max_iter {
                             drop(sub_tx);
@@ -1538,7 +1537,7 @@ impl ActorSystem {
             });
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::RegisterJob {
+                .send_async(ActorSystemCmd::RegisterJob {
                     job_id: job_id.clone(),
                     controller: JobController {
                         abort_tx,
@@ -1552,9 +1551,9 @@ impl ActorSystem {
                 result_subscriber_rx: Some(sub_rx),
             });
         } else {
-            let (abort_tx, mut abort_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(self.channel_size);
-            let (resume_tx, mut resume_rx) = tokio::sync::mpsc::channel(self.channel_size);
+            let (abort_tx, mut abort_rx) = channel::channel(self.channel_size);
+            let (stop_tx, mut stop_rx) = channel::channel(self.channel_size);
+            let (resume_tx, mut resume_rx) = channel::channel(self.channel_size);
             let _ = tokio::spawn(async move {
                 let mut i = 0usize;
                 loop {
@@ -1586,7 +1585,7 @@ impl ActorSystem {
             });
             let _ = self
                 .handler_tx
-                .send(ActorSystemCmd::RegisterJob {
+                .send_async(ActorSystemCmd::RegisterJob {
                     job_id: job_id.clone(),
                     controller: JobController {
                         abort_tx,
@@ -1615,14 +1614,14 @@ impl ActorSystem {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
-            .send(ActorSystemCmd::FindJob {
+            .send_async(ActorSystemCmd::FindJob {
                 job_id: job_id.clone(),
                 result_tx: tx,
             })
             .await;
         match rx.await {
             Ok(Some(controller)) => {
-                let _ = controller.abort_tx.send(());
+                let _ = controller.abort_tx.send_async(()).await;
             }
             Ok(None) => {
                 error!("Job {} not found", job_id);
@@ -1644,14 +1643,14 @@ impl ActorSystem {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
-            .send(ActorSystemCmd::FindJob {
+            .send_async(ActorSystemCmd::FindJob {
                 job_id: job_id.clone(),
                 result_tx: tx,
             })
             .await;
         match rx.await {
             Ok(Some(controller)) => {
-                let _ = controller.stop_tx.send(());
+                let _ = controller.stop_tx.send_async(()).await;
             }
             Ok(None) => {
                 error!("Job {} not found", job_id);
@@ -1672,14 +1671,14 @@ impl ActorSystem {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .handler_tx
-            .send(ActorSystemCmd::FindJob {
+            .send_async(ActorSystemCmd::FindJob {
                 job_id: job_id.clone(),
                 result_tx: tx,
             })
             .await;
         match rx.await {
             Ok(Some(controller)) => {
-                let _ = controller.resume_tx.send(());
+                let _ = controller.resume_tx.send_async(()).await;
             }
             Ok(None) => {
                 error!("Job {} not found", job_id);
@@ -1692,7 +1691,7 @@ impl ActorSystem {
 
     fn run(
         &mut self,
-        handler_rx: tokio::sync::mpsc::Receiver<ActorSystemCmd>,
+        handler_rx: channel::Receiver<ActorSystemCmd>,
     ) -> tokio::task::JoinHandle<()> {
         #[cfg(feature = "multi-node")]
         let inter_node = self.inter_node.clone();
@@ -1709,7 +1708,7 @@ impl ActorSystem {
 
 // {{{ fn actor_system_loop
 async fn actor_system_loop(
-    mut handler_rx: tokio::sync::mpsc::Receiver<ActorSystemCmd>,
+    mut handler_rx: channel::Receiver<ActorSystemCmd>,
     #[cfg(feature = "multi-node")] inter_node: Option<InterNodeRuntime>,
 ) {
     let mut address_list = HashSet::<String>::new();
@@ -1718,8 +1717,8 @@ async fn actor_system_loop(
         (
             String,
             Arc<dyn Mailbox>,
-            tokio::sync::mpsc::Sender<()>,
-            tokio::sync::mpsc::Sender<()>,
+            channel::Sender<()>,
+            channel::Sender<()>,
             LifeCycle,
         ),
     >::new();
@@ -1778,7 +1777,7 @@ async fn actor_system_loop(
                         actor_map.get_mut(&address)
                     {
                         *life_cycle = LifeCycle::Restarting;
-                        let _ = restart_tx.send(()).await;
+                        let _ = restart_tx.send_async(()).await;
                     }
                 }
             }
@@ -1794,7 +1793,7 @@ async fn actor_system_loop(
                 for address in addresses {
                     match actor_map.entry(address.to_string()) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
-                            let _ = entry.get_mut().3.send(()).await;
+                            let _ = entry.get_mut().3.send_async(()).await;
                             entry.remove_entry();
                             address_list.remove(&address);
                         }
@@ -1887,9 +1886,9 @@ async fn actor_system_loop(
 /// so abort couldn't break a paused job.
 async fn delay_or_abort(
     duration: std::time::Duration,
-    abort_rx: &mut tokio::sync::mpsc::Receiver<()>,
-    stop_rx: &mut tokio::sync::mpsc::Receiver<()>,
-    resume_rx: &mut tokio::sync::mpsc::Receiver<()>,
+    abort_rx: &mut channel::Receiver<()>,
+    stop_rx: &mut channel::Receiver<()>,
+    resume_rx: &mut channel::Receiver<()>,
 ) -> bool {
     if duration.is_zero() {
         return true;

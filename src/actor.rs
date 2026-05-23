@@ -1,10 +1,11 @@
+use crate::channel;
 use crate::{
     ActorError, ActorSystem, ActorSystemCmd, Blocking, CHANNEL_SIZE, ErrorHandling, LifeCycle,
     Message, TypedMailbox,
 };
 use std::sync::Arc;
 
-/// User-implemented unit of work in the actor system. (bounded-channel variant.)
+/// User-implemented unit of work in the actor system.
 ///
 /// You provide:
 /// - associated types `Message`, `Result`, `Error`,
@@ -126,32 +127,34 @@ where
     /// `actor_system_loop` via `ActorSystemCmd`. Do **not** implement
     /// this method — use [`register`] to wire the actor up.
     ///
+    /// `channel_size` is the mailbox capacity under `bounded-channel`
+    /// and is ignored under `unbounded-channel`.
+    ///
     /// [`register`]: Self::register
     async fn run_actor(
         &mut self,
-        actor_system_tx: tokio::sync::mpsc::Sender<ActorSystemCmd>,
+        actor_system_tx: channel::Sender<ActorSystemCmd>,
         error_handling: ErrorHandling,
-        ready_tx: tokio::sync::mpsc::Sender<Result<(), ActorError>>,
+        ready_tx: channel::Sender<Result<(), ActorError>>,
         channel_size: Option<usize>,
     ) -> Result<(), ActorError> {
         let mut is_restarted = false;
+        let size = channel_size.unwrap_or(CHANNEL_SIZE);
         loop {
             if is_restarted {
                 self.post_restart().await;
             }
-            let (tx, mut rx) =
-                tokio::sync::mpsc::channel::<Message<Self>>(channel_size.unwrap_or(CHANNEL_SIZE));
-            let (kill_tx, mut kill_rx) =
-                tokio::sync::mpsc::channel::<()>(channel_size.unwrap_or(CHANNEL_SIZE));
-            let (restart_tx, mut restart_rx) =
-                tokio::sync::mpsc::channel::<()>(channel_size.unwrap_or(CHANNEL_SIZE));
+            let (tx, mut rx) = channel::channel::<Message<Self>>(size);
+            let (kill_tx, mut kill_rx) = channel::channel::<()>(size);
+            let (restart_tx, mut restart_rx) = channel::channel::<()>(size);
             let mailbox = Arc::new(TypedMailbox::<Self>::new(tx.clone()));
 
             let mut count = 0;
             let result_rx = loop {
                 let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                if let Err(e) = actor_system_tx
-                    .send(ActorSystemCmd::Register {
+                if let Err(e) = channel::send(
+                    &actor_system_tx,
+                    ActorSystemCmd::Register {
                         actor_type: std::any::type_name::<Self>().to_string(),
                         #[cfg(not(feature = "multi-node"))]
                         address: self.address().to_string(),
@@ -167,8 +170,9 @@ where
                         },
                         result_tx,
                         is_restarted,
-                    })
-                    .await
+                    },
+                )
+                .await
                 {
                     count += 1;
                     error!(
@@ -178,7 +182,8 @@ where
                         e
                     );
                     if count > 10 {
-                        let _ = ready_tx.send(Err(ActorError::UnhealthyActorSystem)).await;
+                        let _ = channel::send(&ready_tx, Err(ActorError::UnhealthyActorSystem))
+                            .await;
                         return Err(ActorError::UnhealthyActorSystem);
                     }
                 }
@@ -186,25 +191,27 @@ where
             };
             match result_rx.await {
                 Ok(Err(e)) => {
-                    let _ = ready_tx.send(Err(e)).await;
+                    let _ = channel::send(&ready_tx, Err(e)).await;
                     // Now, this case is only when the address already exists.
                     return Err(ActorError::AddressAlreadyExist(self.local_name().to_string()));
                 }
                 Err(e) => {
-                    let _ = ready_tx.send(Err(ActorError::from(e))).await;
+                    let _ = channel::send(&ready_tx, Err(ActorError::from(e))).await;
                     return Err(ActorError::UnhealthyActorSystem);
                 }
                 _ => {}
             }
             self.pre_start().await;
             is_restarted = true;
-            let _ = actor_system_tx
-                .send(ActorSystemCmd::SetLifeCycle {
+            let _ = channel::send(
+                &actor_system_tx,
+                ActorSystemCmd::SetLifeCycle {
                     address: self.local_name().to_string(),
                     life_cycle: LifeCycle::Receiving,
-                })
-                .await;
-            let _ = ready_tx.send(Ok(())).await;
+                },
+            )
+            .await;
+            let _ = channel::send(&ready_tx, Ok(())).await;
             if let Some(_) = loop {
                 tokio::select! {
                     Some(mut msg) = rx.recv() => {
@@ -244,34 +251,42 @@ where
                     }
                 };
             } {
-                let _ = actor_system_tx
-                    .send(ActorSystemCmd::SetLifeCycle {
+                let _ = channel::send(
+                    &actor_system_tx,
+                    ActorSystemCmd::SetLifeCycle {
                         address: self.local_name().to_string(),
                         life_cycle: LifeCycle::Stopping,
-                    })
-                    .await;
+                    },
+                )
+                .await;
                 self.post_stop().await;
-                let _ = actor_system_tx
-                    .send(ActorSystemCmd::SetLifeCycle {
+                let _ = channel::send(
+                    &actor_system_tx,
+                    ActorSystemCmd::SetLifeCycle {
                         address: self.local_name().to_string(),
                         life_cycle: LifeCycle::Terminated,
-                    })
-                    .await;
+                    },
+                )
+                .await;
                 break Ok(());
             }
-            let _ = actor_system_tx
-                .send(ActorSystemCmd::SetLifeCycle {
+            let _ = channel::send(
+                &actor_system_tx,
+                ActorSystemCmd::SetLifeCycle {
                     address: self.local_name().to_string(),
                     life_cycle: LifeCycle::Stopping,
-                })
-                .await;
+                },
+            )
+            .await;
             self.pre_restart().await;
-            let _ = actor_system_tx
-                .send(ActorSystemCmd::SetLifeCycle {
+            let _ = channel::send(
+                &actor_system_tx,
+                ActorSystemCmd::SetLifeCycle {
                     address: self.local_name().to_string(),
                     life_cycle: LifeCycle::Restarting,
-                })
-                .await;
+                },
+            )
+            .await;
         }
     }
 
@@ -290,7 +305,8 @@ where
     ///   handler does long synchronous work that would otherwise starve
     ///   the async runtime.
     /// - `channel_size`: override the mailbox capacity for this actor.
-    ///   `None` uses `CHANNEL_SIZE` (4096).
+    ///   `None` uses the default (4096). Ignored under
+    ///   `unbounded-channel`.
     ///
     /// [`ErrorHandling`]: crate::ErrorHandling
     /// [`LifeCycle::Starting`]: crate::LifeCycle::Starting
@@ -301,7 +317,8 @@ where
         blocking: Blocking,
         channel_size: Option<usize>,
     ) -> Result<(), ActorError> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(channel_size.unwrap_or(CHANNEL_SIZE));
+        let size = channel_size.unwrap_or(CHANNEL_SIZE);
+        let (tx, mut rx) = channel::channel(size);
         let actor_system_tx = actor_system.handler_tx();
         let _ = if blocking == Blocking::Blocking {
             tokio::task::spawn_blocking(move || {
@@ -328,7 +345,7 @@ where
         if let Some(result) = rx.recv().await {
             result
         } else {
-            Err(ActorError::BoundedChannelRecv)
+            Err(ActorError::ChannelRecv)
         }
     }
 }

@@ -13,21 +13,15 @@ pub enum ActorError {
     /// and producing a reply.
     #[error(transparent)]
     OneshotRecv(#[from] tokio::sync::oneshot::error::RecvError),
-    /// `mpsc::UnboundedSender::send` failed — the receiver was dropped.
-    /// Indicates the target mailbox/loop has shut down.
-    #[error("Failed to send on unbounded channel: {0}")]
-    UnboundedChannelSend(String),
-    /// `mpsc::UnboundedReceiver::recv` returned `None` — all senders are
-    /// gone.
-    #[error("Failed to recv from unbounded channel")]
-    UnboundedChannelRecv,
-    /// `mpsc::Sender::send` failed — the receiver was dropped.
-    /// Indicates the target mailbox/loop has shut down.
-    #[error("Failed to send on bounded channel: {0}")]
-    BoundedChannelSend(String),
-    /// `mpsc::Receiver::recv` returned `None` — all senders are gone.
-    #[error("Failed to recv from bounded channel")]
-    BoundedChannelRecv,
+    /// Channel send failed — the receiver was dropped. Indicates the
+    /// target mailbox/loop has shut down. Same variant for both the
+    /// bounded and unbounded mpsc backends.
+    #[error("Failed to send on channel: {0}")]
+    ChannelSend(String),
+    /// Channel `recv` returned `None` — all senders are gone. Same
+    /// variant for both backends.
+    #[error("Failed to recv from channel")]
+    ChannelRecv,
     /// `address_regex` failed to compile (broadcast / restart / unregister).
     #[error(transparent)]
     AddressRegexError(#[from] regex::Error),
