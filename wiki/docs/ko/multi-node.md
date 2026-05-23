@@ -169,5 +169,6 @@ send_and_recv::<T>(addr, msg)
 
 - `register_for_inter_node!` 호출 누락은 해당 actor 타입의 envelope이 처음 도착하는 시점에 `ActorError::InterNodeDecoderMissing`으로 표면화됩니다. 매크로는 `inventory::submit!`로 전개되므로 반드시 모듈 스코프에서 호출해야 합니다(함수 내부 ❌).
 - `address.node != self_node`인 송신을 `broker_addr = None`으로 만든 시스템에서 호출하면 `ActorError::InterNodeNotConfigured`.
+- 초기 broker 연결은 `inter_node::DEFAULT_BROKER_CONNECT_TIMEOUT`(5초)로 제한됩니다. broker가 없거나 도달 불가면 OS 기본 TCP connect 타임아웃(분 단위) 대신 `ActorError::InterNodeIo("broker connect to ... timed out after 5s")`로 즉시 `ActorSystem::new`가 실패합니다. 다른 값이 필요하면 `InterNodeRuntime::connect_with_timeout`을 직접 사용하세요.
 - `NodeFilter::Peers`의 노드 멤버십은 호출자가 제공합니다. 라이브러리는 어느 피어가 살아있는지 추적하지 않습니다; 구독자가 없는 `Topic::request(node)`로 보내면 envelope이 브로커 큐에 누군가 구독할 때까지 쌓입니다.
 - 주소가 완전 자격을 갖춤 → 단일 `ActorSystem` 안의 location transparency보다 *명시적*. 호출자는 어느 노드가 actor를 소유하는지 알아야 합니다. 대신 race window나 eventual-consistency window가 없습니다 — 라우팅은 주소 자체로 결정.

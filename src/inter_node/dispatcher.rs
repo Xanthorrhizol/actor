@@ -7,9 +7,15 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
+use std::time::Duration;
 use tokio::sync::oneshot;
 use xanq::client::Client;
 use xanq::consumer::Consumer;
+
+/// Wall-clock cap for the initial TCP `Client::connect` to the broker.
+/// Bypasses the OS-default TCP connect timeout (minutes) so a missing /
+/// unreachable broker fails the `ActorSystem::new` call promptly.
+pub const DEFAULT_BROKER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<ResponseOutcome>>>>;
 
@@ -22,10 +28,28 @@ pub struct InterNodeRuntime {
 }
 
 impl InterNodeRuntime {
+    /// Connect to a xanq broker using `DEFAULT_BROKER_CONNECT_TIMEOUT`.
     pub async fn connect(node_name: String, broker_addr: String) -> Result<Self, ActorError> {
-        let client = Client::<Topic>::connect(broker_addr.as_str())
-            .await
-            .map_err(|e| ActorError::InterNodeIo(e.to_string()))?;
+        Self::connect_with_timeout(node_name, broker_addr, DEFAULT_BROKER_CONNECT_TIMEOUT).await
+    }
+
+    /// Connect with an explicit timeout. Useful in tests or when running on
+    /// a slow link where 5 s isn't enough (or when you want to fail faster).
+    pub async fn connect_with_timeout(
+        node_name: String,
+        broker_addr: String,
+        timeout: Duration,
+    ) -> Result<Self, ActorError> {
+        let connect_fut = Client::<Topic>::connect(broker_addr.as_str());
+        let client = match tokio::time::timeout(timeout, connect_fut).await {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => return Err(ActorError::InterNodeIo(e.to_string())),
+            Err(_) => {
+                return Err(ActorError::InterNodeIo(format!(
+                    "broker connect to {broker_addr} timed out after {timeout:?}"
+                )));
+            }
+        };
         Ok(Self {
             node_name,
             client: Arc::new(client),

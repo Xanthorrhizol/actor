@@ -8,7 +8,7 @@ pub use decoder::{
     ActorTypeFn, DecodeMessageFn, EncodeResultFn, InterNodeDecoder, decode_codec,
     decode_message_for, encode_codec, encode_result_for, type_name_of,
 };
-pub use dispatcher::InterNodeRuntime;
+pub use dispatcher::{DEFAULT_BROKER_CONNECT_TIMEOUT, InterNodeRuntime};
 pub use envelope::{InterNodeMessage, InterNodeResponse, ResponseOutcome, Topic, TopicKind};
 
 /// Register an `Actor`'s message and result types so that this node can
