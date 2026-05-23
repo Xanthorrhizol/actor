@@ -115,19 +115,21 @@ impl InterNodeRuntime {
     ) -> Result<Vec<u8>, ActorError> {
         let req_id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        {
+        // Insert and arm the cleanup guard in the same locked region so
+        // there's no window in which the entry could survive a panic or
+        // early return without the `Drop` reclaiming it. The guard
+        // handles every exit path from here on — return-on-error,
+        // return-on-response, and cancel-by-timeout.
+        let _guard = {
             let mut map = self
                 .pending
                 .lock()
                 .map_err(|_| ActorError::InterNodeRemote("pending map poisoned".into()))?;
             map.insert(req_id, tx);
-        }
-        // From here on the pending entry must be cleaned up if we exit
-        // before `rx.await` completes — including when the outer
-        // `send_and_recv_with_timeout` cancels this future.
-        let _guard = PendingGuard {
-            pending: self.pending.clone(),
-            req_id,
+            PendingGuard {
+                pending: self.pending.clone(),
+                req_id,
+            }
         };
         let envelope = InterNodeMessage::Call {
             actor_type: actor_type.to_string(),

@@ -1225,6 +1225,9 @@ impl ActorSystem {
     /// For cross-node calls the dispatcher's pending-requests entry is
     /// reclaimed via a `Drop` guard, so a late-arriving response is
     /// silently discarded rather than leaking.
+    ///
+    /// Takes `&mut self` (unlike the `_without_tx_cache` variant) because
+    /// the wrapped `send_and_recv` mutates the per-clone TX cache.
     pub async fn send_and_recv_with_timeout<T>(
         &mut self,
         #[cfg(not(feature = "multi-node"))] address: String,
