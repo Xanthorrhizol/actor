@@ -18,6 +18,7 @@ Each actor defines its own independent message type.
 - register: `register(...)`
 - send: `send::<T>(address, msg)`
 - request/response: `send_and_recv::<T>(address, msg)`
+- request/response with deadline: `send_and_recv_with_timeout::<T>(address, msg, timeout)` — returns `ActorError::Timeout(duration)` if no reply arrives in time. A cache-bypassing variant `send_and_recv_without_tx_cache_with_timeout` is also available.
 - broadcast: `send_broadcast::<T>(regex, msg)`
 - job execution: `run_job::<T>(...)`
 

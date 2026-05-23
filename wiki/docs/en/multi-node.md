@@ -97,6 +97,7 @@ The Server is generic at the API level but type-erased on the wire (bytes), so i
 
 ```rust
 use xan_actor::prelude::*;   // Address, NodeFilter, ...
+use std::time::Duration;
 
 // Same node — local fast path, no broker round trip.
 system
@@ -107,6 +108,21 @@ system
 let result = system
     .send_and_recv::<MyActor>(Address::new("node-b", "/echo/1"), MyMessage::Ping("hi".into()))
     .await?;
+
+// Same call with a deadline — recommended for cross-node so a dead peer
+// can't park the call indefinitely.
+match system
+    .send_and_recv_with_timeout::<MyActor>(
+        Address::new("node-b", "/echo/1"),
+        MyMessage::Ping("hi".into()),
+        Duration::from_secs(3),
+    )
+    .await
+{
+    Ok(reply) => println!("got {reply:?}"),
+    Err(ActorError::Timeout(d)) => eprintln!("peer didn't reply within {d:?}"),
+    Err(e) => return Err(e),
+}
 
 // Broadcast across an explicit peer set.
 let results = system
@@ -181,6 +197,7 @@ There is no discovery channel and no shared directory.
 
 - A missing `register_for_inter_node!` call surfaces as `ActorError::InterNodeDecoderMissing` the first time an envelope arrives for that actor type. All `register_for_inter_node!` calls must be at module scope (not inside fns) because they expand to `inventory::submit!`.
 - Calling `send` / `send_and_recv` with `address.node != self_node` while the system was created with `broker_addr = None` returns `ActorError::InterNodeNotConfigured`.
+- Cross-node `send_and_recv` has no implicit failure detection — the underlying `oneshot` waiter can only fire when the peer publishes a response back, so a dead peer parks the call indefinitely. Use `send_and_recv_with_timeout(addr, msg, duration)` (or `send_and_recv_without_tx_cache_with_timeout`) to bound the wait (see the example in Step 5 above); on expiry it returns `ActorError::Timeout(duration)` and the dispatcher's pending-requests entry is reclaimed via a `Drop` guard.
 - The initial broker connection is bounded by `inter_node::DEFAULT_BROKER_CONNECT_TIMEOUT` (5 s). If the broker is missing or unreachable, `ActorSystem::new` fails with `ActorError::InterNodeIo("broker connect to ... timed out after 5s")` instead of hanging on the OS-default TCP connect timeout. `InterNodeRuntime::connect_with_timeout` is available if you need a different cap.
 - Node membership for `NodeFilter::Peers` is supplied by the caller. The library doesn't track which peers are alive; sending to a non-subscribed `Topic::request(node)` will queue the envelope in the broker until someone subscribes.
 - The address is fully qualified, so location transparency is by design *less* than in a single `ActorSystem`. Callers must know which node owns the actor they're calling. In return, there's no race window or eventual-consistency window — routing is decided by the address itself.
